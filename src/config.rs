@@ -48,15 +48,50 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Ensure `name` exists in auth.toml. Returns `true` if a new account was added.
-pub fn ensure_account(path: &Path, name: &str) -> Result<bool, AppError> {
+/// Ensure `name` exists in auth.toml with the given provider.
+/// Returns `true` if a new account was added.
+pub fn ensure_account(
+    path: &Path,
+    name: &str,
+    provider: ProviderKind,
+) -> Result<bool, AppError> {
     let mut config = load_config_or_default(path)?;
     if config.accounts.iter().any(|a| a.name == name) {
         return Ok(false);
     }
     config.accounts.push(Account {
         name: name.to_string(),
-        provider: ProviderKind::OpenCodeGo,
+        provider,
+        api_key: None,
+    });
+    save_config(path, &config)?;
+    Ok(true)
+}
+
+/// Upsert a ZAI account with api_key into auth.toml.
+/// Returns whether the account was newly created.
+pub fn upsert_zai_account(
+    path: &Path,
+    name: &str,
+    api_key: &str,
+) -> Result<bool, AppError> {
+    let mut config = load_config_or_default(path)?;
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return Err(AppError::Config("api_key must not be empty".into()));
+    }
+
+    if let Some(account) = config.accounts.iter_mut().find(|a| a.name == name) {
+        account.provider = ProviderKind::Zai;
+        account.api_key = Some(key);
+        save_config(path, &config)?;
+        return Ok(false);
+    }
+
+    config.accounts.push(Account {
+        name: name.to_string(),
+        provider: ProviderKind::Zai,
+        api_key: Some(key),
     });
     save_config(path, &config)?;
     Ok(true)
@@ -83,11 +118,12 @@ mod tests {
     fn ensure_account_creates_file_and_account() {
         let dir = temp_dir();
         let path = dir.join("auth.toml");
-        assert!(ensure_account(&path, "kibashi").unwrap());
+        assert!(ensure_account(&path, "kibashi", ProviderKind::OpenCodeGo).unwrap());
         let cfg = load_config(&path).unwrap();
         assert_eq!(cfg.accounts.len(), 1);
         assert_eq!(cfg.accounts[0].name, "kibashi");
         assert_eq!(cfg.accounts[0].provider, ProviderKind::OpenCodeGo);
+        assert!(cfg.accounts[0].api_key.is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -99,19 +135,34 @@ mod tests {
         cfg.accounts.push(Account {
             name: "existing".into(),
             provider: ProviderKind::OpenCodeGo,
+            api_key: None,
         });
         cfg.refresh_interval_secs = 90;
         save_config(&path, &cfg).unwrap();
 
-        assert!(ensure_account(&path, "newone").unwrap());
-        assert!(!ensure_account(&path, "newone").unwrap());
-        assert!(!ensure_account(&path, "existing").unwrap());
+        assert!(ensure_account(&path, "newone", ProviderKind::OpenCodeGo).unwrap());
+        assert!(!ensure_account(&path, "newone", ProviderKind::OpenCodeGo).unwrap());
+        assert!(!ensure_account(&path, "existing", ProviderKind::OpenCodeGo).unwrap());
 
         let loaded = load_config(&path).unwrap();
         assert_eq!(loaded.refresh_interval_secs, 90);
         assert_eq!(loaded.accounts.len(), 2);
-        assert!(loaded.accounts.iter().any(|a| a.name == "existing"));
-        assert!(loaded.accounts.iter().any(|a| a.name == "newone"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_zai_stores_api_key() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        assert!(upsert_zai_account(&path, "myzai", "secret-key").unwrap());
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(cfg.accounts.len(), 1);
+        assert_eq!(cfg.accounts[0].provider, ProviderKind::Zai);
+        assert_eq!(cfg.accounts[0].api_key.as_deref(), Some("secret-key"));
+
+        assert!(!upsert_zai_account(&path, "myzai", "new-key").unwrap());
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(cfg.accounts[0].api_key.as_deref(), Some("new-key"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

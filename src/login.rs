@@ -12,7 +12,7 @@ use wry::{PageLoadEvent, WebViewBuilder};
 
 use crate::config;
 use crate::error::AppError;
-use crate::model::SessionEntry;
+use crate::model::{ProviderKind, SessionEntry};
 use crate::session;
 
 const LOGIN_URL: &str = "https://opencode.ai/auth";
@@ -36,10 +36,60 @@ enum UserEvent {
 pub fn run_login_flow(
     account_name: &str,
     force: bool,
+    provider: ProviderKind,
+    api_key: Option<String>,
     data_dir: &Path,
     config_path: &Path,
 ) -> Result<(), AppError> {
-    if config::ensure_account(config_path, account_name)? {
+    match provider {
+        ProviderKind::Zai => run_zai_login(account_name, api_key, config_path),
+        ProviderKind::OpenCodeGo => {
+            run_opencode_login(account_name, force, data_dir, config_path)
+        }
+    }
+}
+
+fn run_zai_login(
+    account_name: &str,
+    api_key: Option<String>,
+    config_path: &Path,
+) -> Result<(), AppError> {
+    let key = api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .or_else(|| {
+            std::env::var("Z_AI_API_KEY")
+                .ok()
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+        })
+        .ok_or_else(|| {
+            AppError::Login(
+                "z.ai requires an API key. Pass --api-key or set Z_AI_API_KEY.".into(),
+            )
+        })?;
+
+    let created = config::upsert_zai_account(config_path, account_name, &key)?;
+    if created {
+        println!(
+            "Added account '{account_name}' (zai) to {}",
+            config_path.display()
+        );
+    } else {
+        println!("Updated API key for account '{account_name}' (zai)");
+    }
+    println!("  Key: stored ({} chars)", key.len());
+    println!("  Endpoint: https://api.z.ai (personal / global)");
+    Ok(())
+}
+
+fn run_opencode_login(
+    account_name: &str,
+    force: bool,
+    data_dir: &Path,
+    config_path: &Path,
+) -> Result<(), AppError> {
+    if config::ensure_account(config_path, account_name, ProviderKind::OpenCodeGo)? {
         println!(
             "Added account '{account_name}' (opencode_go) to {}",
             config_path.display()
@@ -64,7 +114,10 @@ pub fn run_login_flow(
     // Always start clean so leftover cookies cannot false-trigger success.
     if partition_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&partition_dir) {
-            warn!("Failed to clear webview partition {}: {e}", partition_dir.display());
+            warn!(
+                "Failed to clear webview partition {}: {e}",
+                partition_dir.display()
+            );
         }
     }
     std::fs::create_dir_all(&partition_dir).map_err(AppError::Io)?;

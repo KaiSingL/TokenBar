@@ -67,9 +67,7 @@ fn meter_count(snapshot: &UsageSnapshot) -> u16 {
 }
 
 fn provider_label(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::OpenCodeGo => "opencode_go",
-    }
+    provider.as_str()
 }
 
 fn status_badge(status: &AccountStatus) -> (String, Style) {
@@ -122,15 +120,27 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
 
     match status {
         AccountStatus::NoSession => {
+            let (title, hint) = match account.provider {
+                ProviderKind::Zai => (
+                    "No API key".to_string(),
+                    format!(
+                        "tokenbar login {} --provider zai --api-key …",
+                        account.name
+                    ),
+                ),
+                ProviderKind::OpenCodeGo => (
+                    "No session loaded".to_string(),
+                    format!("tokenbar login {}", account.name),
+                ),
+            };
             f.render_widget(
                 Paragraph::new(vec![
+                    Line::from(Span::styled(title, Style::default().fg(Color::DarkGray))),
                     Line::from(Span::styled(
-                        "No session loaded",
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                    Line::from(Span::styled(
-                        format!("tokenbar login {}", account.name),
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                        hint,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
                     )),
                 ]),
                 inner,
@@ -186,12 +196,25 @@ fn compact_age(secs: i64) -> String {
 }
 
 fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_note: Option<String>) {
-    let mut windows: Vec<(&str, &UsageWindow)> = vec![("Rolling", &snapshot.rolling)];
+    let mut labels: Vec<String> = Vec::new();
+    let mut windows: Vec<&UsageWindow> = Vec::new();
+
+    labels.push(
+        snapshot
+            .rolling
+            .label
+            .clone()
+            .unwrap_or_else(|| "Rolling".into()),
+    );
+    windows.push(&snapshot.rolling);
+
     if let Some(ref w) = snapshot.weekly {
-        windows.push(("Weekly", w));
+        labels.push(w.label.clone().unwrap_or_else(|| "Weekly".into()));
+        windows.push(w);
     }
     if let Some(ref m) = snapshot.monthly {
-        windows.push(("Monthly", m));
+        labels.push(m.label.clone().unwrap_or_else(|| "Monthly".into()));
+        windows.push(m);
     }
 
     let meter_rows = windows.len() as u16;
@@ -207,11 +230,11 @@ fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_not
         .constraints(constraints)
         .split(area);
 
-    for (i, (label, window)) in windows.iter().enumerate() {
+    for (i, window) in windows.iter().enumerate() {
         if i >= rows.len() {
             break;
         }
-        render_meter_row(f, rows[i], label, window);
+        render_meter_row(f, rows[i], &labels[i], window);
     }
 
     if let (Some(note), Some(row)) = (footer_note, rows.get(meter_rows as usize)) {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::{RwLock, mpsc, Semaphore};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{error, info, warn};
 
 use crate::api;
@@ -136,10 +136,9 @@ impl Poller {
             let client = self.client.clone();
             let timeout = self.request_timeout;
             let state = self.state.clone();
-
             let session_entry = self.sessions.get(&account.name).cloned();
 
-            if session_entry.is_none() {
+            if !api::has_credentials(&account, session_entry.as_ref()) {
                 let mut state = state.write().await;
                 state.statuses[i] = AccountStatus::NoSession;
                 continue;
@@ -159,12 +158,9 @@ impl Poller {
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
-                let entry = session_entry.unwrap();
-                let workspace_id = entry.workspace_id.as_deref();
-
-                let result = api::opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
-                    .fetch_usage(&account.name, &entry.cookie, workspace_id)
-                    .await;
+                let result =
+                    api::fetch_for_account(&account, session_entry.as_ref(), &client, timeout)
+                        .await;
 
                 let mut state = state.write().await;
                 match result {
@@ -175,11 +171,15 @@ impl Poller {
                         error!("Account '{}' fetch failed: {e}", account.name);
                         match &e {
                             AppError::InvalidCredentials => {
-                                warn!("Account '{}' has invalid credentials, clearing session", account.name);
+                                warn!(
+                                    "Account '{}' has invalid credentials",
+                                    account.name
+                                );
                                 state.statuses[i] = AccountStatus::NoSession;
                             }
                             _ => {
-                                let already_had_ready = matches!(&state.statuses[i], AccountStatus::Ready(_));
+                                let already_had_ready =
+                                    matches!(&state.statuses[i], AccountStatus::Ready(_));
                                 if already_had_ready {
                                     if let AccountStatus::Ready(ref last) = state.statuses[i] {
                                         state.statuses[i] = AccountStatus::Stale {
@@ -201,7 +201,6 @@ impl Poller {
             });
             handles.push(handle);
 
-            // Small stagger between account launches
             if i < account_count.saturating_sub(1) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

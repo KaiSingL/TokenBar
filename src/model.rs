@@ -7,12 +7,36 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderKind {
     #[serde(rename = "opencode_go", alias = "open_code_go")]
     OpenCodeGo,
+    #[serde(rename = "zai", alias = "z_ai")]
+    Zai,
+}
+
+impl ProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenCodeGo => "opencode_go",
+            Self::Zai => "zai",
+        }
+    }
+
+    pub fn parse_cli(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "opencode_go" | "open_code_go" | "opencodego" => Ok(Self::OpenCodeGo),
+            "zai" | "z_ai" | "z.ai" => Ok(Self::Zai),
+            other => Err(format!(
+                "Unknown provider '{other}'. Expected: opencode_go, zai"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub name: String,
     pub provider: ProviderKind,
+    /// API key for token-based providers (e.g. zai). Omitted for cookie providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,9 +51,15 @@ pub struct AppConfig {
     pub accounts: Vec<Account>,
 }
 
-fn default_refresh_interval() -> u64 { 60 }
-fn default_request_timeout() -> u64 { 15 }
-fn default_max_concurrent() -> usize { 4 }
+fn default_refresh_interval() -> u64 {
+    60
+}
+fn default_request_timeout() -> u64 {
+    15
+}
+fn default_max_concurrent() -> usize {
+    4
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -60,6 +90,30 @@ pub struct SessionEntry {
 pub struct UsageWindow {
     pub usage_percent: f64,
     pub reset_in_sec: u64,
+    /// Optional display label (e.g. "5h", "Weekly"). Falls back to Rolling/Weekly/Monthly.
+    pub label: Option<String>,
+}
+
+impl UsageWindow {
+    pub fn new(usage_percent: f64, reset_in_sec: u64) -> Self {
+        Self {
+            usage_percent,
+            reset_in_sec,
+            label: None,
+        }
+    }
+
+    pub fn with_label(
+        usage_percent: f64,
+        reset_in_sec: u64,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            usage_percent,
+            reset_in_sec,
+            label: Some(label.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

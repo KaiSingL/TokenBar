@@ -347,29 +347,29 @@ fn parse_subscription(
     );
 
     let weekly = if weekly_percent.is_some() && weekly_reset.is_some() {
-        Some(UsageWindow {
-            usage_percent: normalize_percent(weekly_percent.unwrap()),
-            reset_in_sec: weekly_reset.unwrap() as u64,
-        })
+        Some(UsageWindow::new(
+            normalize_percent(weekly_percent.unwrap()),
+            weekly_reset.unwrap() as u64,
+        ))
     } else {
         None
     };
 
     let monthly = if monthly_percent.is_some() || monthly_reset.is_some() {
-        Some(UsageWindow {
-            usage_percent: normalize_percent(monthly_percent.unwrap_or(0.0)),
-            reset_in_sec: monthly_reset.unwrap_or(0) as u64,
-        })
+        Some(UsageWindow::new(
+            normalize_percent(monthly_percent.unwrap_or(0.0)),
+            monthly_reset.unwrap_or(0) as u64,
+        ))
     } else {
         None
     };
 
     Ok(UsageSnapshot {
         account_name: account_name.to_string(),
-        rolling: UsageWindow {
-            usage_percent: normalize_percent(rolling_percent),
-            reset_in_sec: rolling_reset as u64,
-        },
+        rolling: UsageWindow::new(
+            normalize_percent(rolling_percent),
+            rolling_reset as u64,
+        ),
         weekly,
         monthly,
         updated_at: now,
@@ -518,18 +518,9 @@ fn build_snapshot(
 
     Some(UsageSnapshot {
         account_name: account_name.to_string(),
-        rolling: UsageWindow {
-            usage_percent: rolling_window.0,
-            reset_in_sec: rolling_window.1 as u64,
-        },
-        weekly: weekly_window.map(|(p, r)| UsageWindow {
-            usage_percent: p,
-            reset_in_sec: r as u64,
-        }),
-        monthly: monthly_window.map(|(p, r)| UsageWindow {
-            usage_percent: p,
-            reset_in_sec: r as u64,
-        }),
+        rolling: UsageWindow::new(rolling_window.0, rolling_window.1 as u64),
+        weekly: weekly_window.map(|(p, r)| UsageWindow::new(p, r as u64)),
+        monthly: monthly_window.map(|(p, r)| UsageWindow::new(p, r as u64)),
         updated_at: now,
         workspace_id: Some(workspace_id.to_string()),
     })

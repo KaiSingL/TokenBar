@@ -5,7 +5,7 @@ pub enum AppError {
     #[error("Configuration error: {0}")]
     Config(String),
 
-    #[error("OpenCode Go session cookie is invalid or expired")]
+    #[error("Invalid or expired credentials")]
     InvalidCredentials,
 
     #[error("Network error: {0}")]

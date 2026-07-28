@@ -37,11 +37,17 @@ enum Commands {
         #[command(subcommand)]
         action: SessionCommands,
     },
-    /// Log in to an account via built-in browser (captures console session)
+    /// Log in / store credentials for an account
     Login {
         /// Account name (added to auth.toml if missing)
         name: String,
-        /// Overwrite existing session
+        /// Provider: opencode_go (default) or zai
+        #[arg(long, default_value = "opencode_go")]
+        provider: String,
+        /// z.ai API key (or set Z_AI_API_KEY). Ignored for opencode_go.
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Overwrite existing OpenCode session cookie
         #[arg(long)]
         force: bool,
     },
@@ -98,9 +104,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_session_command(action, &data_dir, &config_path)?;
             Ok(())
         }
-        Some(Commands::Login { name, force }) => {
+        Some(Commands::Login {
+            name,
+            provider,
+            api_key,
+            force,
+        }) => {
             init_console_tracing(env_filter);
-            login::run_login_flow(&name, force, &data_dir, &config_path)?;
+            let provider = model::ProviderKind::parse_cli(&provider)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            login::run_login_flow(&name, force, provider, api_key, &data_dir, &config_path)?;
             Ok(())
         }
         None => {
@@ -135,9 +148,7 @@ fn init_file_tracing(
 }
 
 fn provider_label(p: model::ProviderKind) -> &'static str {
-    match p {
-        model::ProviderKind::OpenCodeGo => "opencode_go",
-    }
+    p.as_str()
 }
 
 fn format_age(secs: i64) -> String {
@@ -173,29 +184,65 @@ fn print_status(
     let mut known = std::collections::HashSet::new();
     for account in &app_config.accounts {
         known.insert(account.name.as_str());
-        match sessions.sessions.get(&account.name) {
-            Some(entry) => {
-                let wid = entry
-                    .workspace_id
-                    .as_deref()
-                    .unwrap_or("(discover on next poll)");
-                let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
-                println!(
-                    "  {:<16}  {:<12}  session ok  workspace {}  updated {} ago",
-                    account.name,
-                    provider_label(account.provider),
-                    wid,
-                    format_age(age.num_seconds())
-                );
+        match account.provider {
+            model::ProviderKind::Zai => {
+                let has_key = account
+                    .api_key
+                    .as_ref()
+                    .map(|k| !k.trim().is_empty())
+                    .unwrap_or(false)
+                    || std::env::var("Z_AI_API_KEY")
+                        .map(|k| !k.trim().is_empty())
+                        .unwrap_or(false);
+                if has_key {
+                    let src = if account
+                        .api_key
+                        .as_ref()
+                        .map(|k| !k.trim().is_empty())
+                        .unwrap_or(false)
+                    {
+                        "auth.toml"
+                    } else {
+                        "env Z_AI_API_KEY"
+                    };
+                    println!(
+                        "  {:<16}  {:<12}  api key ok  ({src})",
+                        account.name,
+                        provider_label(account.provider),
+                    );
+                } else {
+                    println!(
+                        "  {:<16}  {:<12}  no api key  (run: tokenbar login {} --provider zai --api-key …)",
+                        account.name,
+                        provider_label(account.provider),
+                        account.name
+                    );
+                }
             }
-            None => {
-                println!(
-                    "  {:<16}  {:<12}  no session  (run: tokenbar login {})",
-                    account.name,
-                    provider_label(account.provider),
-                    account.name
-                );
-            }
+            model::ProviderKind::OpenCodeGo => match sessions.sessions.get(&account.name) {
+                Some(entry) => {
+                    let wid = entry
+                        .workspace_id
+                        .as_deref()
+                        .unwrap_or("(discover on next poll)");
+                    let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+                    println!(
+                        "  {:<16}  {:<12}  session ok  workspace {}  updated {} ago",
+                        account.name,
+                        provider_label(account.provider),
+                        wid,
+                        format_age(age.num_seconds())
+                    );
+                }
+                None => {
+                    println!(
+                        "  {:<16}  {:<12}  no session  (run: tokenbar login {})",
+                        account.name,
+                        provider_label(account.provider),
+                        account.name
+                    );
+                }
+            },
         }
     }
 
