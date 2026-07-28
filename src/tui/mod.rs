@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::execute;
+use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -12,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use tokio::sync::{RwLock, mpsc};
+use tokio::time::interval;
 
 use crate::app::{AppEvent, AppState};
 use crate::model::AccountStatus;
@@ -46,7 +48,11 @@ async fn run_loop(
     state: Arc<RwLock<AppState>>,
     event_tx: mpsc::Sender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut last_tick = tokio::time::Instant::now();
+    let mut events = EventStream::new();
+    let mut ticker = interval(TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // First tick completes immediately; draw once then wait.
+    ticker.tick().await;
 
     loop {
         {
@@ -54,40 +60,36 @@ async fn run_loop(
             s.tick_count += 1;
         }
 
-        terminal.draw(|f| {
-            let area = f.area();
-            let app_state = state.blocking_read();
-            render_layout(f, area, &app_state);
-        })?;
-
-        let timeout = TICK_INTERVAL
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or(Duration::ZERO);
-
-        if event::poll(timeout)? {
-            let ev = event::read()?;
-            match ev {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            let _ = event_tx.send(AppEvent::Quit).await;
-                            break;
-                        }
-                        KeyCode::Char('r') | KeyCode::Char('R') => {
-                            event_tx.send(AppEvent::Refresh).await?;
-                        }
-                        _ => {}
-                    }
-                }
-                Event::Resize(_, _) => {
-                    // handled on next draw
-                }
-                _ => {}
-            }
+        {
+            let app_state = state.read().await;
+            terminal.draw(|f| {
+                let area = f.area();
+                render_layout(f, area, &app_state);
+            })?;
         }
 
-        if last_tick.elapsed() >= TICK_INTERVAL {
-            last_tick = tokio::time::Instant::now();
+        tokio::select! {
+            _ = ticker.tick() => {}
+            maybe_event = events.next() => {
+                match maybe_event {
+                    Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                let _ = event_tx.send(AppEvent::Quit).await;
+                                break;
+                            }
+                            KeyCode::Char('r') | KeyCode::Char('R') => {
+                                event_tx.send(AppEvent::Refresh).await?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Ok(Event::Resize(_, _))) => {}
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,
+                    _ => {}
+                }
+            }
         }
     }
 

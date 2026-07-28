@@ -9,6 +9,7 @@ mod api;
 mod app;
 mod config;
 mod error;
+mod login;
 mod model;
 mod session;
 mod tui;
@@ -32,6 +33,14 @@ enum Commands {
     Session {
         #[command(subcommand)]
         action: SessionCommands,
+    },
+    /// Log in to an account via built-in browser (captures console session)
+    Login {
+        /// Account name (must match auth.toml)
+        name: String,
+        /// Overwrite existing session
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -84,18 +93,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_session_command(action, &data_dir)?;
             Ok(())
         }
-        None => {
-            run_tui(&config_path, &data_dir).await
+        Some(Commands::Login { name, force }) => {
+            login::run_login_flow(&name, force, &data_dir, &config_path)?;
+            Ok(())
         }
+        None => run_tui(&config_path, &data_dir).await,
     }
 }
 
-fn run_session_command(cmd: SessionCommands, data_dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run_session_command(
+    cmd: SessionCommands,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sessions_path = session::resolve_sessions_path(data_dir);
     let mut sessions = session::load_sessions(&sessions_path)?;
 
     match cmd {
-        SessionCommands::Set { name, cookie, json_file_path } => {
+        SessionCommands::Set {
+            name,
+            cookie,
+            json_file_path,
+        } => {
             let cookie_val = if let Some(c) = cookie {
                 c
             } else if let Some(path) = json_file_path {
@@ -106,20 +124,25 @@ fn run_session_command(cmd: SessionCommands, data_dir: &std::path::Path) -> Resu
                 return Err("Either --cookie or --json-file-path is required".into());
             };
 
-            sessions.sessions.insert(name.clone(), model::SessionEntry {
-                cookie: cookie_val,
-                workspace_id: None,
-                updated_at: chrono::Utc::now(),
-            });
+            sessions.sessions.insert(
+                name.clone(),
+                model::SessionEntry {
+                    cookie: cookie_val,
+                    workspace_id: None,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
             session::save_sessions(&sessions_path, &sessions)?;
-            info!("Session stored for account '{}'", name);
+            info!("Session stored for account '{name}'");
+            println!("Session stored for account '{name}'");
         }
         SessionCommands::Rm { name } => {
             if sessions.sessions.remove(&name).is_some() {
                 session::save_sessions(&sessions_path, &sessions)?;
-                info!("Session removed for account '{}'", name);
+                info!("Session removed for account '{name}'");
+                println!("Session removed for account '{name}'");
             } else {
-                info!("No session found for account '{}'", name);
+                println!("No session found for account '{name}'");
             }
         }
         SessionCommands::Status => {
@@ -138,13 +161,19 @@ fn run_session_command(cmd: SessionCommands, data_dir: &std::path::Path) -> Resu
             } else {
                 println!("Session details:");
                 for (name, entry) in &sessions.sessions {
-                    let age = chrono::Utc::now()
-                        .signed_duration_since(entry.updated_at);
-                    let wid = entry.workspace_id.as_deref().unwrap_or("(discover on next poll)");
+                    let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+                    let wid = entry
+                        .workspace_id
+                        .as_deref()
+                        .unwrap_or("(discover on next poll)");
                     println!("  {name}:");
                     println!("    cookie: ({} chars)", entry.cookie.len());
                     println!("    workspace_id: {wid}");
-                    println!("    updated: {} ({} ago)", entry.updated_at.format("%Y-%m-%d %H:%M:%S"), age);
+                    println!(
+                        "    updated: {} ({} ago)",
+                        entry.updated_at.format("%Y-%m-%d %H:%M:%S"),
+                        age
+                    );
                 }
             }
         }
@@ -153,7 +182,10 @@ fn run_session_command(cmd: SessionCommands, data_dir: &std::path::Path) -> Resu
     Ok(())
 }
 
-async fn run_tui(config_path: &std::path::Path, data_dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tui(
+    config_path: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     debug!("Loading config from {}", config_path.display());
 
     let app_config = config::load_config(config_path)?;

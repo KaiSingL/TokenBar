@@ -7,9 +7,9 @@ pub fn resolve_data_dir(override_path: Option<&str>) -> Result<PathBuf, AppError
     if let Some(path) = override_path {
         return Ok(PathBuf::from(path));
     }
-    let base = dirs::config_dir()
-        .ok_or_else(|| AppError::Config("Cannot determine config directory".into()))?;
-    Ok(base.join("tokenbar"))
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Config("Cannot determine home directory".into()))?;
+    Ok(home.join(".config").join("tokenbar"))
 }
 
 pub fn resolve_config_path(data_dir: &std::path::Path) -> PathBuf {

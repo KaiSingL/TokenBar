@@ -24,7 +24,7 @@ pub fn render_account_card(
     status: &AccountStatus,
 ) {
     let provider_label = match account.provider {
-        ProviderKind::OpenCodeGo => "opencodego",
+        ProviderKind::OpenCodeGo => "opencode_go",
     };
 
     let title = format!(" {} · {} ", account.name, provider_label);
@@ -44,7 +44,7 @@ pub fn render_account_card(
     match status {
         AccountStatus::NoSession => {
             let msg = format!(
-                " No session loaded\n tokenbar session set {} --cookie \"...\"",
+                " No session loaded\n tokenbar login {}",
                 account.name
             );
             f.render_widget(

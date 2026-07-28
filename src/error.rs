@@ -19,4 +19,7 @@ pub enum AppError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Login error: {0}")]
+    Login(String),
 }
