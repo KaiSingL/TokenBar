@@ -37,7 +37,7 @@ enum Commands {
     },
     /// Log in to an account via built-in browser (captures console session)
     Login {
-        /// Account name (must match auth.toml)
+        /// Account name (added to auth.toml if missing)
         name: String,
         /// Overwrite existing session
         #[arg(long)]

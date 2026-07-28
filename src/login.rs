@@ -39,11 +39,11 @@ pub fn run_login_flow(
     data_dir: &Path,
     config_path: &Path,
 ) -> Result<(), AppError> {
-    let app_config = config::load_config(config_path)?;
-    if !app_config.accounts.iter().any(|a| a.name == account_name) {
-        return Err(AppError::Login(format!(
-            "Account '{account_name}' not found in auth.toml. Add it first."
-        )));
+    if config::ensure_account(config_path, account_name)? {
+        println!(
+            "Added account '{account_name}' (opencode_go) to {}",
+            config_path.display()
+        );
     }
 
     let sessions_path = session::resolve_sessions_path(data_dir);
