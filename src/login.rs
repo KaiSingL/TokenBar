@@ -18,11 +18,15 @@ use crate::session;
 const LOGIN_URL: &str = "https://opencode.ai/auth";
 const COOKIE_POLL_MS: u64 = 750;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+/// Minimum length for a real OpenCode iron-session `auth` cookie value.
+const MIN_AUTH_COOKIE_LEN: usize = 80;
+/// Require the same candidate on this many consecutive polls before accepting.
+const STABLE_POLLS_REQUIRED: u8 = 2;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CapturedSession {
     cookie: String,
-    workspace_id: Option<String>,
+    workspace_id: String,
 }
 
 enum UserEvent {
@@ -52,10 +56,17 @@ pub fn run_login_flow(
 
     println!("Opening browser window for OpenCode console login...");
     println!("  Account: {account_name}");
-    println!("  Log in at opencode.ai — window closes automatically on success.");
+    println!("  Complete login until you reach a workspace page.");
+    println!("  Window closes automatically only after a verified session is captured.");
     println!();
 
     let partition_dir = login_partition_dir(data_dir, account_name);
+    // Always start clean so leftover cookies cannot false-trigger success.
+    if partition_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&partition_dir) {
+            warn!("Failed to clear webview partition {}: {e}", partition_dir.display());
+        }
+    }
     std::fs::create_dir_all(&partition_dir).map_err(AppError::Io)?;
 
     let captured = open_login_webview(&partition_dir)?;
@@ -64,7 +75,7 @@ pub fn run_login_flow(
         account_name.to_string(),
         SessionEntry {
             cookie: captured.cookie.clone(),
-            workspace_id: captured.workspace_id.clone(),
+            workspace_id: Some(captured.workspace_id.clone()),
             updated_at: Utc::now(),
         },
     );
@@ -73,11 +84,7 @@ pub fn run_login_flow(
     println!("Login successful!");
     println!("  Account: {account_name}");
     println!("  Cookie: stored ({} chars)", captured.cookie.len());
-    if let Some(ref wid) = captured.workspace_id {
-        println!("  Workspace: {wid}");
-    } else {
-        println!("  Workspace: (will discover on next poll)");
-    }
+    println!("  Workspace: {}", captured.workspace_id);
 
     Ok(())
 }
@@ -134,7 +141,6 @@ fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError>
         .build(&window)
         .map_err(|e| AppError::Login(format_webview_error(e)))?;
 
-    // Fresh partition data dir already isolates accounts; avoid wiping mid-login.
     let _ = webview.load_url(LOGIN_URL);
 
     let started = Instant::now();
@@ -144,6 +150,10 @@ fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError>
     let webview = Arc::new(webview);
     let webview_poll = webview.clone();
     let latest_url_poll = latest_url.clone();
+
+    // Candidate must appear STABLE_POLLS_REQUIRED times in a row.
+    let pending: Arc<Mutex<Option<(CapturedSession, u8)>>> = Arc::new(Mutex::new(None));
+    let pending_poll = pending.clone();
 
     let proxy_tick = proxy.clone();
     std::thread::spawn(move || loop {
@@ -182,19 +192,45 @@ fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError>
 
                 match try_capture_session(webview_poll.as_ref(), &url) {
                     Ok(Some(session)) => {
-                        info!(
-                            "Session captured ({} chars)",
-                            session.cookie.len()
-                        );
-                        let _ = webview_poll.evaluate_script(
-                            r#"document.title = "TokenBar — Login successful";"#,
-                        );
-                        if let Ok(mut slot) = result_for_loop.lock() {
-                            *slot = Some(Ok(session));
+                        let ready = match pending_poll.lock() {
+                            Ok(mut pending) => match pending.as_mut() {
+                                Some((prev, count)) if prev == &session => {
+                                    *count = count.saturating_add(1);
+                                    *count >= STABLE_POLLS_REQUIRED
+                                }
+                                _ => {
+                                    *pending = Some((session.clone(), 1));
+                                    false
+                                }
+                            },
+                            Err(_) => false,
+                        };
+
+                        if ready {
+                            info!(
+                                "Session captured ({} chars), workspace={}",
+                                session.cookie.len(),
+                                session.workspace_id
+                            );
+                            let _ = webview_poll.evaluate_script(
+                                r#"document.title = "TokenBar — Login successful";"#,
+                            );
+                            if let Ok(mut slot) = result_for_loop.lock() {
+                                *slot = Some(Ok(session));
+                            }
+                            *control_flow = ControlFlow::Exit;
+                        } else {
+                            debug!(
+                                "Candidate session seen (workspace={}); waiting for stability",
+                                session.workspace_id
+                            );
                         }
-                        *control_flow = ControlFlow::Exit;
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if let Ok(mut pending) = pending_poll.lock() {
+                            *pending = None;
+                        }
+                    }
                     Err(e) => {
                         warn!("cookie poll error: {e}");
                     }
@@ -231,111 +267,116 @@ fn try_capture_session(
     webview: &wry::WebView,
     current_url: &str,
 ) -> Result<Option<CapturedSession>, String> {
-    if looks_like_login_intermediate(current_url) {
-        return Ok(None);
-    }
-
     let cookies = webview
         .cookies_for_url("https://opencode.ai/")
         .or_else(|_| webview.cookies())
         .map_err(|e| format!("Failed to read cookies: {e}"))?;
 
-    if cookies.is_empty() || !has_session_cookie(&cookies) {
-        return Ok(None);
+    let cookie_pairs: Vec<(String, String)> = cookies
+        .iter()
+        .map(|c| (c.name().to_string(), c.value().to_string()))
+        .collect();
+
+    let webview_url = webview.url().ok();
+    let result = evaluate_capture(current_url, webview_url.as_deref(), &cookie_pairs);
+
+    if result.is_none() {
+        debug!(
+            "poll skip url={} cookies=[{}]",
+            current_url,
+            cookie_names_csv(&cookie_pairs)
+        );
     }
 
-    // Only capture once we're back on opencode.ai after auth (not mid-OAuth).
-    let host_ok = current_url.contains("opencode.ai");
-    if !host_ok {
-        return Ok(None);
+    Ok(result)
+}
+
+/// Pure capture decision — unit-tested without a webview.
+fn evaluate_capture(
+    current_url: &str,
+    webview_url: Option<&str>,
+    cookies: &[(String, String)],
+) -> Option<CapturedSession> {
+    if looks_like_login_intermediate(current_url) {
+        return None;
     }
-
-    // Prefer authenticated surfaces; also accept /auth after session cookies exist
-    // when redirected to workspace or console home.
-    let authenticated_surface = current_url.contains("/workspace/")
-        || current_url.contains("/go")
-        || (current_url.contains("opencode.ai")
-            && !looks_like_auth_page(current_url));
-
-    // If still on /auth but session cookie is set, wait until navigation leaves pure login.
-    if current_url.contains("/auth") && !current_url.contains("/workspace/") {
-        // Some flows land on /auth while already logged in — require session cookie
-        // and that we are not on oauth intermediate. Capture after cookies appear.
-        // Delay capture on bare /auth to avoid racing password page.
-        if !current_url.ends_with("/auth") && !current_url.contains("/auth?") {
-            // deeper auth paths may still be login
-            if looks_like_auth_page(current_url) {
-                return Ok(None);
-            }
-        } else {
-            // bare /auth: only capture if we also see workspace-ish cookie richness
-            // wait for redirect to workspace when possible
-            return Ok(None);
-        }
+    if is_auth_flow_url(current_url) {
+        return None;
     }
-
-    if !authenticated_surface && !current_url.contains("/workspace/") {
-        return Ok(None);
-    }
-
-    let header = build_cookie_header(&cookies);
-    if header.is_empty() {
-        return Ok(None);
+    if !current_url.contains("opencode.ai") {
+        return None;
     }
 
     let workspace_id = extract_workspace_id(current_url)
-        .or_else(|| webview.url().ok().and_then(|u| extract_workspace_id(&u)));
+        .or_else(|| webview_url.and_then(extract_workspace_id))?;
 
-    // Require workspace path OR enough cookie signal after leaving auth
-    if workspace_id.is_none() && current_url.contains("/auth") {
-        return Ok(None);
+    let auth_value = find_auth_cookie_value(cookies)?;
+    if !is_valid_auth_cookie_value(auth_value) {
+        return None;
     }
 
-    // If no workspace in URL yet but we have session cookies on a non-auth page, capture.
-    if workspace_id.is_none() && looks_like_auth_page(current_url) {
-        return Ok(None);
+    let header = build_cookie_header(cookies);
+    if header.is_empty() {
+        return None;
     }
 
-    debug!(
-        "Captured session cookie ({} chars), workspace={:?}",
-        header.len(),
-        workspace_id
-    );
-
-    Ok(Some(CapturedSession {
+    Some(CapturedSession {
         cookie: header,
         workspace_id,
-    }))
-}
-
-fn has_session_cookie(cookies: &[cookie::Cookie<'static>]) -> bool {
-    cookies.iter().any(|c| {
-        let name = c.name().to_ascii_lowercase();
-        name == "auth"
-            || name.contains("session")
-            || name.contains("opencode")
-            || name.starts_with("sb-")
-            || name.contains("token")
     })
 }
 
-fn build_cookie_header(cookies: &[cookie::Cookie<'static>]) -> String {
+fn find_auth_cookie_value(cookies: &[(String, String)]) -> Option<&str> {
     cookies
         .iter()
-        .map(|c| format!("{}={}", c.name(), c.value()))
+        .find(|(name, _)| name.eq_ignore_ascii_case("auth"))
+        .map(|(_, v)| v.as_str())
+}
+
+fn is_valid_auth_cookie_value(value: &str) -> bool {
+    let v = value.trim();
+    if v.len() < MIN_AUTH_COOKIE_LEN {
+        return false;
+    }
+    // OpenCode uses iron-session sealed cookies (Fe26.2**…)
+    v.starts_with("Fe26.") || v.len() >= 120
+}
+
+fn build_cookie_header(cookies: &[(String, String)]) -> String {
+    cookies
+        .iter()
+        .map(|(n, v)| format!("{n}={v}"))
         .collect::<Vec<_>>()
         .join("; ")
 }
 
-fn looks_like_auth_page(url: &str) -> bool {
+fn cookie_names_csv(cookies: &[(String, String)]) -> String {
+    cookies
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Any URL still in the login/auth flow — never capture here.
+fn is_auth_flow_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
+    // Path segment /auth (not e.g. "author")
+    if lower.contains("/auth/")
+        || lower.contains("/auth?")
+        || lower.ends_with("/auth")
+        || lower.contains("opencode.ai/auth")
+    {
+        // Allow only if somehow also on workspace (shouldn't happen)
+        if extract_workspace_id(url).is_some() {
+            return false;
+        }
+        return true;
+    }
     lower.contains("/login")
         || lower.contains("sign-in")
         || lower.contains("signin")
-        || lower.contains("auth/authorize")
-        || lower.contains("accounts.google")
-        || lower.contains("github.com/login")
-        || lower.contains("github.com/session")
+        || lower.contains("sign_in")
 }
 
 fn looks_like_login_intermediate(url: &str) -> bool {
@@ -345,6 +386,7 @@ fn looks_like_login_intermediate(url: &str) -> bool {
         || lower.contains("github.com/session")
         || lower.contains("auth/authorize")
         || lower.contains("oauth/authorize")
+        || lower.contains("oauth2/")
 }
 
 fn extract_workspace_id(url: &str) -> Option<String> {
@@ -352,7 +394,7 @@ fn extract_workspace_id(url: &str) -> Option<String> {
     let idx = url.find(marker)?;
     let rest = &url[idx + marker.len()..];
     let id = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if id.starts_with("wrk_") && id.len() > 4 {
+    if id.starts_with("wrk_") && id.len() > 8 {
         Some(id.to_string())
     } else {
         None
@@ -368,5 +410,128 @@ fn format_webview_error(err: wry::Error) -> String {
         )
     } else {
         format!("Failed to create webview: {msg}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn long_auth() -> String {
+        format!("Fe26.2**{}", "a".repeat(200))
+    }
+
+    fn cookies_with_auth(auth: &str) -> Vec<(String, String)> {
+        vec![
+            ("auth".into(), auth.into()),
+            ("_ga".into(), "GA1.1.x".into()),
+        ]
+    }
+
+    #[test]
+    fn reject_auth_landing_page() {
+        let c = cookies_with_auth(&long_auth());
+        assert!(evaluate_capture("https://opencode.ai/auth", None, &c).is_none());
+        assert!(evaluate_capture("https://opencode.ai/auth?", None, &c).is_none());
+        assert!(evaluate_capture("https://opencode.ai/auth/callback", None, &c).is_none());
+        assert!(evaluate_capture("https://opencode.ai/auth/cli", None, &c).is_none());
+    }
+
+    #[test]
+    fn reject_oauth_intermediates() {
+        let c = cookies_with_auth(&long_auth());
+        assert!(evaluate_capture(
+            "https://accounts.google.com/o/oauth2/auth",
+            None,
+            &c
+        )
+        .is_none());
+        assert!(evaluate_capture(
+            "https://github.com/login/oauth/authorize",
+            None,
+            &c
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn reject_homepage_without_workspace() {
+        let c = cookies_with_auth(&long_auth());
+        assert!(evaluate_capture("https://opencode.ai/", None, &c).is_none());
+        assert!(evaluate_capture("https://opencode.ai/go", None, &c).is_none());
+    }
+
+    #[test]
+    fn reject_short_or_missing_auth_cookie() {
+        let url = "https://opencode.ai/workspace/wrk_01ABC123XYZ/go";
+        assert!(evaluate_capture(url, None, &[]).is_none());
+        assert!(evaluate_capture(
+            url,
+            None,
+            &[("auth".into(), "short".into())]
+        )
+        .is_none());
+        assert!(evaluate_capture(
+            url,
+            None,
+            &[("session".into(), long_auth())]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn accept_workspace_with_valid_auth() {
+        let auth = long_auth();
+        let c = cookies_with_auth(&auth);
+        let url = "https://opencode.ai/workspace/wrk_01KE4QRVQMJPHQVJTNJZFJ76G7/go";
+        let captured = evaluate_capture(url, None, &c).expect("should capture");
+        assert_eq!(
+            captured.workspace_id,
+            "wrk_01KE4QRVQMJPHQVJTNJZFJ76G7"
+        );
+        assert!(captured.cookie.contains("auth=Fe26.2**"));
+    }
+
+    #[test]
+    fn accept_workspace_id_from_webview_url_fallback() {
+        let auth = long_auth();
+        let c = cookies_with_auth(&auth);
+        // Navigation handler lag: current_url still intermediate host check passes
+        // only if current is on opencode and not auth — use workspace-less opencode
+        // with webview_url holding workspace.
+        // Actually evaluate requires workspace from current OR webview.
+        // current must not be auth flow. Homepage + webview workspace works.
+        let captured = evaluate_capture(
+            "https://opencode.ai/",
+            Some("https://opencode.ai/workspace/wrk_01ABCDEFGH1234567890/go"),
+            &c,
+        )
+        .expect("should capture via webview url");
+        assert_eq!(captured.workspace_id, "wrk_01ABCDEFGH1234567890");
+    }
+
+    #[test]
+    fn extract_workspace_id_variants() {
+        assert_eq!(
+            extract_workspace_id("https://opencode.ai/workspace/wrk_01ABC/go"),
+            Some("wrk_01ABC".into())
+        );
+        assert_eq!(
+            extract_workspace_id("https://opencode.ai/workspace/wrk_01ABC?x=1"),
+            Some("wrk_01ABC".into())
+        );
+        assert_eq!(
+            extract_workspace_id("https://opencode.ai/workspace/notvalid"),
+            None
+        );
+        assert_eq!(extract_workspace_id("https://opencode.ai/auth"), None);
+    }
+
+    #[test]
+    fn is_valid_auth_cookie_value_rules() {
+        assert!(!is_valid_auth_cookie_value("short"));
+        assert!(!is_valid_auth_cookie_value(&"x".repeat(100))); // long but not Fe26 and < 120
+        assert!(is_valid_auth_cookie_value(&long_auth()));
+        assert!(is_valid_auth_cookie_value(&"z".repeat(120)));
     }
 }
