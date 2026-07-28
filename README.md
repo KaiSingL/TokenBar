@@ -54,9 +54,11 @@ message and elapsed time.
 ```shell
 git clone <repo-url>
 cd tokenbar
-cargo build --release
-cp target/release/tokenbar ~/.local/bin/   # or anywhere on $PATH
+cargo install --path .
 ```
+
+This builds the binary and installs it to `~/.cargo/bin/tokenbar`
+automatically.
 
 ## Quick start
 
