@@ -30,6 +30,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Show accounts and session status
+    Status,
     /// Manage session cookies
     Session {
         #[command(subcommand)]
@@ -86,9 +88,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| EnvFilter::new("warn,tokenbar=debug"));
 
     match cli.command {
+        Some(Commands::Status) => {
+            init_console_tracing(env_filter);
+            print_status(&config_path, &data_dir)?;
+            Ok(())
+        }
         Some(Commands::Session { action }) => {
             init_console_tracing(env_filter);
-            run_session_command(action, &data_dir)?;
+            run_session_command(action, &data_dir, &config_path)?;
             Ok(())
         }
         Some(Commands::Login { name, force }) => {
@@ -127,9 +134,91 @@ fn init_file_tracing(
     Ok(())
 }
 
+fn provider_label(p: model::ProviderKind) -> &'static str {
+    match p {
+        model::ProviderKind::OpenCodeGo => "opencode_go",
+    }
+}
+
+fn format_age(secs: i64) -> String {
+    let secs = secs.max(0) as u64;
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else if mins > 0 {
+        format!("{mins}m")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn print_status(
+    config_path: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app_config = config::load_config_or_default(config_path)?;
+    let sessions = session::load_sessions(&session::resolve_sessions_path(data_dir))?;
+
+    if app_config.accounts.is_empty() && sessions.sessions.is_empty() {
+        println!("No accounts configured.");
+        println!("  Add one with: tokenbar login <name>");
+        return Ok(());
+    }
+
+    println!("Accounts:");
+    let mut known = std::collections::HashSet::new();
+    for account in &app_config.accounts {
+        known.insert(account.name.as_str());
+        match sessions.sessions.get(&account.name) {
+            Some(entry) => {
+                let wid = entry
+                    .workspace_id
+                    .as_deref()
+                    .unwrap_or("(discover on next poll)");
+                let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+                println!(
+                    "  {:<16}  {:<12}  session ok  workspace {}  updated {} ago",
+                    account.name,
+                    provider_label(account.provider),
+                    wid,
+                    format_age(age.num_seconds())
+                );
+            }
+            None => {
+                println!(
+                    "  {:<16}  {:<12}  no session  (run: tokenbar login {})",
+                    account.name,
+                    provider_label(account.provider),
+                    account.name
+                );
+            }
+        }
+    }
+
+    let orphans: Vec<_> = sessions
+        .sessions
+        .keys()
+        .filter(|name| !known.contains(name.as_str()))
+        .collect();
+    if !orphans.is_empty() {
+        println!();
+        println!("Orphan sessions (not in auth.toml):");
+        for name in orphans {
+            println!("  {name}");
+        }
+    }
+
+    Ok(())
+}
+
 fn run_session_command(
     cmd: SessionCommands,
     data_dir: &std::path::Path,
+    config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sessions_path = session::resolve_sessions_path(data_dir);
     let mut sessions = session::load_sessions(&sessions_path)?;
@@ -172,14 +261,7 @@ fn run_session_command(
             }
         }
         SessionCommands::Status => {
-            if sessions.sessions.is_empty() {
-                println!("No sessions stored.");
-            } else {
-                println!("Sessions:");
-                for name in sessions.sessions.keys() {
-                    println!("  {name}");
-                }
-            }
+            print_status(config_path, data_dir)?;
         }
         SessionCommands::Export => {
             if sessions.sessions.is_empty() {
@@ -198,7 +280,7 @@ fn run_session_command(
                     println!(
                         "    updated: {} ({} ago)",
                         entry.updated_at.format("%Y-%m-%d %H:%M:%S"),
-                        age
+                        format_age(age.num_seconds())
                     );
                 }
             }
