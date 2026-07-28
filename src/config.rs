@@ -37,6 +37,16 @@ pub fn load_config_or_default(path: &Path) -> Result<AppConfig, AppError> {
     load_config(path)
 }
 
+/// Load config from `path`, creating a default `auth.toml` when missing.
+pub fn load_or_create_config(path: &Path) -> Result<AppConfig, AppError> {
+    if path.exists() {
+        return load_config(path);
+    }
+    let config = AppConfig::default();
+    save_config(path, &config)?;
+    Ok(config)
+}
+
 pub fn save_config(path: &Path, config: &AppConfig) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(AppError::Io)?;
@@ -112,6 +122,46 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn load_or_create_config_writes_default_when_missing() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        assert!(!path.exists());
+
+        let cfg = load_or_create_config(&path).unwrap();
+        assert!(path.exists());
+        assert_eq!(cfg.refresh_interval_secs, 60);
+        assert_eq!(cfg.request_timeout_secs, 15);
+        assert_eq!(cfg.max_concurrent_fetches, 4);
+        assert!(cfg.accounts.is_empty());
+
+        let reloaded = load_config(&path).unwrap();
+        assert_eq!(reloaded.refresh_interval_secs, 60);
+        assert!(reloaded.accounts.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_create_config_leaves_existing_file_unchanged() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let mut cfg = AppConfig::default();
+        cfg.refresh_interval_secs = 90;
+        cfg.accounts.push(Account {
+            name: "existing".into(),
+            provider: ProviderKind::OpenCodeGo,
+            api_key: None,
+        });
+        save_config(&path, &cfg).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+
+        let loaded = load_or_create_config(&path).unwrap();
+        assert_eq!(loaded.refresh_interval_secs, 90);
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

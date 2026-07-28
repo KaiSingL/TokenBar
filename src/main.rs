@@ -343,7 +343,7 @@ async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     debug!("Loading config from {}", config_path.display());
 
-    let app_config = config::load_config(config_path)?;
+    let app_config = config::load_or_create_config(config_path)?;
 
     info!(
         "Loaded {} account(s) from config",
