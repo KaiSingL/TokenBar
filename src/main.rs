@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long, help = "Override data directory (default: ~/.config/tokenbar or %APPDATA%/tokenbar)")]
     data_dir: Option<String>,
 
+    /// Enable debug logging (poll skips, API traces, etc.)
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -91,7 +95,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,tokenbar=debug"));
+        .unwrap_or_else(|_| {
+            if cli.debug {
+                EnvFilter::new("warn,tokenbar=debug")
+            } else {
+                EnvFilter::new("info")
+            }
+        });
 
     match cli.command {
         Some(Commands::Status) => {
