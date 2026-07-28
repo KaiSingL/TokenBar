@@ -8,7 +8,7 @@ use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::model::{Account, UsageSnapshot, UsageWindow};
+use crate::model::{UsageSnapshot, UsageWindow};
 
 const BASE_URL: &str = "https://opencode.ai";
 const SERVER_URL: &str = "https://opencode.ai/_server";
@@ -28,20 +28,28 @@ impl OpenCodeGoProvider {
         Self { client, timeout }
     }
 
-    pub async fn fetch_usage(&self, account: &Account) -> Result<UsageSnapshot, AppError> {
-        debug!("fetch_usage for account {}", account.name);
+    pub async fn fetch_usage(
+        &self,
+        account_name: &str,
+        cookie: &str,
+        workspace_id_override: Option<&str>,
+    ) -> Result<UsageSnapshot, AppError> {
+        debug!("fetch_usage for account {}", account_name);
 
-        let cookie = &account.cookie;
-
-        let workspace_id = match &account.workspace_id {
-            Some(w) if is_valid_workspace_id(w) => w.clone(),
-            _ => self.fetch_workspace_id(cookie).await?,
+        let workspace_id = if let Some(w) = workspace_id_override {
+            if is_valid_workspace_id(w) {
+                w.to_string()
+            } else {
+                self.fetch_workspace_id(cookie).await?
+            }
+        } else {
+            self.fetch_workspace_id(cookie).await?
         };
 
         let page_text = self.fetch_usage_page(&workspace_id, cookie).await?;
 
         let now = Utc::now();
-        let snapshot = parse_subscription(&page_text, &account.name, &workspace_id, now)?;
+        let snapshot = parse_subscription(&page_text, account_name, &workspace_id, now)?;
 
         Ok(snapshot)
     }

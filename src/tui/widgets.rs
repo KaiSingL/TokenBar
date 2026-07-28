@@ -2,7 +2,7 @@ use chrono::Utc;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::model::{Account, AccountStatus, ProviderKind};
@@ -35,12 +35,25 @@ pub fn render_account_card(
         .border_style(match status {
             AccountStatus::Error { .. } => Style::default().fg(Color::Red),
             AccountStatus::Stale { .. } => Style::default().fg(Color::Yellow),
+            AccountStatus::NoSession => Style::default().fg(Color::DarkGray).dim(),
             _ => Style::default().fg(Color::DarkGray),
         });
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     match status {
+        AccountStatus::NoSession => {
+            let msg = format!(
+                " No session loaded\n tokenbar session set {} --cookie \"...\"",
+                account.name
+            );
+            f.render_widget(
+                Paragraph::new(msg)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
         AccountStatus::Loading => {
             f.render_widget(
                 Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray)),

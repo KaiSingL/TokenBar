@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    #[serde(rename = "opencodego")]
     OpenCodeGo,
 }
 
@@ -11,8 +13,7 @@ pub enum ProviderKind {
 pub struct Account {
     pub name: String,
     pub provider: ProviderKind,
-    pub cookie: String,
-    pub workspace_id: Option<String>,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +43,20 @@ impl Default for AppConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sessions {
+    #[serde(default)]
+    pub sessions: HashMap<String, SessionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub cookie: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UsageWindow {
     pub usage_percent: f64,
@@ -63,6 +78,7 @@ pub struct UsageSnapshot {
 
 #[derive(Debug, Clone)]
 pub enum AccountStatus {
+    NoSession,
     Loading,
     Ready(UsageSnapshot),
     Stale {
