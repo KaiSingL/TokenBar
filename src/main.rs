@@ -45,7 +45,7 @@ enum Commands {
     Login {
         /// Account name (added to auth.toml if missing)
         name: String,
-        /// Provider: opencode_go (default) or zai
+        /// Provider: opencode_go (default), zai, or grok
         #[arg(long, default_value = "opencode_go")]
         provider: String,
         /// z.ai API key (or set Z_AI_API_KEY). Ignored for opencode_go.
@@ -230,7 +230,7 @@ fn print_status(
                 }
             }
             model::ProviderKind::OpenCodeGo => match sessions.sessions.get(&account.name) {
-                Some(entry) => {
+                Some(entry) if !entry.cookie.trim().is_empty() => {
                     let wid = entry
                         .workspace_id
                         .as_deref()
@@ -244,9 +244,34 @@ fn print_status(
                         format_age(age.num_seconds())
                     );
                 }
-                None => {
+                _ => {
                     println!(
                         "  {:<16}  {:<12}  no session  (run: tokenbar login {})",
+                        account.name,
+                        provider_label(account.provider),
+                        account.name
+                    );
+                }
+            },
+            model::ProviderKind::Grok => match sessions.sessions.get(&account.name) {
+                Some(entry) if entry.has_grok_session() => {
+                    let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+                    let email = entry.email.as_deref().unwrap_or("-");
+                    let tok = entry
+                        .access_token
+                        .as_ref()
+                        .map(|t| format!("token {} chars", t.len()))
+                        .unwrap_or_else(|| "session".into());
+                    println!(
+                        "  {:<16}  {:<12}  session ok  {email}  {tok}  updated {} ago",
+                        account.name,
+                        provider_label(account.provider),
+                        format_age(age.num_seconds())
+                    );
+                }
+                _ => {
+                    println!(
+                        "  {:<16}  {:<12}  no session  (run: tokenbar login {} --provider grok)",
                         account.name,
                         provider_label(account.provider),
                         account.name
@@ -301,6 +326,11 @@ fn run_session_command(
                 model::SessionEntry {
                     cookie: cookie_val,
                     workspace_id: None,
+                    access_token: None,
+                    refresh_token: None,
+                    expires_at: None,
+                    email: None,
+                    user_id: None,
                     updated_at: chrono::Utc::now(),
                 },
             );
@@ -332,8 +362,19 @@ fn run_session_command(
                         .as_deref()
                         .unwrap_or("(discover on next poll)");
                     println!("  {name}:");
-                    println!("    cookie: ({} chars)", entry.cookie.len());
-                    println!("    workspace_id: {wid}");
+                    if !entry.cookie.is_empty() {
+                        println!("    cookie: ({} chars)", entry.cookie.len());
+                        println!("    workspace_id: {wid}");
+                    }
+                    if let Some(tok) = &entry.access_token {
+                        println!("    access_token: ({} chars)", tok.len());
+                    }
+                    if let Some(email) = &entry.email {
+                        println!("    email: {email}");
+                    }
+                    if let Some(exp) = entry.expires_at {
+                        println!("    expires_at: {}", exp.to_rfc3339());
+                    }
                     println!(
                         "    updated: {} ({} ago)",
                         entry.updated_at.format("%Y-%m-%d %H:%M:%S"),

@@ -2,7 +2,7 @@
 
 AI subscription usage monitor for your terminal.
 
-Tracks quota usage for AI coding assistants — OpenCode Go and ZAI — and
+Tracks quota usage for AI coding assistants — OpenCode Go, ZAI, and Grok — and
 displays live, color-coded usage bars in a TUI dashboard.
 
 ![Rust](https://img.shields.io/badge/rust-2021-dea584)
@@ -13,12 +13,12 @@ displays live, color-coded usage bars in a TUI dashboard.
 ```
 ┌─ TokenBar · last 14:32:05 · every 60s ─────────────── ● live ─┐
 │                                                               │
-┌─ Personal · opencode_go ──────────────────────────── ready ───┐
+┌─ Personal · opencode_go ──────────────────────────── synced ──┐
 │ 5h       ████████████████░░░░░░░░░  62%  resets 3d 12h        │
 │ Weekly   █████████████████████████  98%  resets 3d 12h        │
 └───────────────────────────────────────────────────────────────┘
 │                                                               │
-┌─ Work · zai ───────────────────────────────────────── ready ──┐
+┌─ Work · zai ───────────────────────────────────────── synced ─┐
 │ 5h       ████████████░░░░░░░░░░░░  48%  resets 4h 23m         │
 │ Weekly   ██████████████░░░░░░░░░░  56%  resets 6d             │
 └───────────────────────────────────────────────────────────────┘
@@ -35,8 +35,9 @@ message and elapsed time.
 
 - Multi-account TUI dashboard with per-account usage bars
 - Automatic refresh on a configurable interval (default 60 s)
-- Two providers: **OpenCode Go** (cookie-based) and **ZAI** (API-key-based)
+- Three providers: **OpenCode Go** (cookie), **ZAI** (API key), **Grok** (OAuth)
 - Embedded browser login for OpenCode Go — no manual cookie hunting
+- Embedded browser login for Grok — captures grok.com session cookies
 - CLI subcommands for status checks and session management
 - Works entirely offline once sessions are saved
 
@@ -69,6 +70,9 @@ tokenbar login personal
 # Log in to a ZAI account
 tokenbar login work --provider zai --api-key sk-abc123...
 
+# Log in to a Grok account (opens browser)
+tokenbar login grokme --provider grok
+
 # Launch the dashboard
 tokenbar
 ```
@@ -81,6 +85,7 @@ tokenbar
 | `tokenbar status` | Print account status (session age, workspace IDs) |
 | `tokenbar login <name>` | Log in to an OpenCode Go account (opens webview) |
 | `tokenbar login <name> --provider zai --api-key <key>` | Save a ZAI API key |
+| `tokenbar login <name> --provider grok` | Log in to Grok (opens webview) |
 | `tokenbar session set <name> --cookie <str>` | Manually set a session cookie |
 | `tokenbar session rm <name>` | Remove a session |
 | `tokenbar session status` | List saved sessions |
@@ -124,6 +129,21 @@ API-key-based provider for [z.ai](https://z.ai). Provide the API key via
 `--api-key` during login. Usage data is fetched from the ZAI REST quota
 endpoint.
 
+### Grok
+
+OAuth provider for [xAI Grok](https://grok.com) / SuperGrok (device code,
+same idea as `grok login --device-auth`). Login opens **auth.x.ai** in a
+webview; approve access (enter the printed user code if asked). Tokens are
+stored per account in `sessions.json`.
+
+```shell
+tokenbar login alice --provider grok
+tokenbar login bob --provider grok
+```
+
+Usage is fetched with the access token from
+`https://cli-chat-proxy.grok.com/v1/billing?format=credits` (Weekly bar).
+
 ## Keybindings (TUI)
 
 | Key | Action |
@@ -145,7 +165,8 @@ src/
 ├── api/
 │   ├── mod.rs           # Provider dispatch
 │   ├── opencodego.rs    # OpenCode Go scraping
-│   └── zai.rs           # ZAI API client
+│   ├── zai.rs           # ZAI API client
+│   └── grok/            # Grok OAuth + billing
 └── tui/
     ├── mod.rs           # TUI event loop and layout
     └── widgets.rs       # Account card and meter rendering

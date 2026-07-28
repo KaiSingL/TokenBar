@@ -19,6 +19,18 @@ pub fn load_sessions(path: &Path) -> Result<Sessions, AppError> {
         .map_err(|e| AppError::Config(format!("Invalid sessions.json: {e}")))?;
     for entry in sessions.sessions.values_mut() {
         entry.cookie = normalize_cookie(&entry.cookie);
+        if let Some(t) = entry.access_token.as_mut() {
+            *t = t.trim().to_string();
+            if t.is_empty() {
+                entry.access_token = None;
+            }
+        }
+        if let Some(t) = entry.refresh_token.as_mut() {
+            *t = t.trim().to_string();
+            if t.is_empty() {
+                entry.refresh_token = None;
+            }
+        }
     }
     Ok(sessions)
 }
@@ -107,6 +119,11 @@ mod tests {
             SessionEntry {
                 cookie: "_opencode_session=abc123".into(),
                 workspace_id: Some("wrk_test123".into()),
+                access_token: None,
+                refresh_token: None,
+                expires_at: None,
+                email: None,
+                user_id: None,
                 updated_at: Utc::now(),
             },
         );

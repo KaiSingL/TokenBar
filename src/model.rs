@@ -9,6 +9,8 @@ pub enum ProviderKind {
     OpenCodeGo,
     #[serde(rename = "zai", alias = "z_ai")]
     Zai,
+    #[serde(rename = "grok", alias = "xai")]
+    Grok,
 }
 
 impl ProviderKind {
@@ -16,6 +18,7 @@ impl ProviderKind {
         match self {
             Self::OpenCodeGo => "opencode_go",
             Self::Zai => "zai",
+            Self::Grok => "grok",
         }
     }
 
@@ -23,8 +26,9 @@ impl ProviderKind {
         match s.trim().to_ascii_lowercase().as_str() {
             "opencode_go" | "open_code_go" | "opencodego" => Ok(Self::OpenCodeGo),
             "zai" | "z_ai" | "z.ai" => Ok(Self::Zai),
+            "grok" | "xai" | "x.ai" => Ok(Self::Grok),
             other => Err(format!(
-                "Unknown provider '{other}'. Expected: opencode_go, zai"
+                "Unknown provider '{other}'. Expected: opencode_go, zai, grok"
             )),
         }
     }
@@ -80,10 +84,35 @@ pub struct Sessions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
+    /// OpenCode Go session cookie. Empty for token-based providers.
+    #[serde(default)]
     pub cookie: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Grok / xAI OAuth access token (from `grok login` auth.json `key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Grok / xAI user id (`x-userid` header for billing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl SessionEntry {
+    /// Grok session via OAuth bearer token (preferred) or legacy cookie.
+    pub fn has_grok_session(&self) -> bool {
+        self.access_token
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false)
+            || !self.cookie.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]

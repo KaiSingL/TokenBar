@@ -72,7 +72,7 @@ fn provider_label(provider: ProviderKind) -> &'static str {
 
 fn status_badge(status: &AccountStatus) -> (String, Style) {
     match status {
-        AccountStatus::Ready(_) => ("ready".into(), Style::default().fg(Color::Green)),
+        AccountStatus::Ready(_) => ("synced".into(), Style::default().fg(Color::Green)),
         AccountStatus::Loading => ("loading".into(), Style::default().fg(Color::Cyan)),
         AccountStatus::Stale { .. } => ("stale".into(), Style::default().fg(Color::Yellow)),
         AccountStatus::Error { .. } => ("error".into(), Style::default().fg(Color::Red)),
@@ -131,6 +131,10 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
                 ProviderKind::OpenCodeGo => (
                     "No session loaded".to_string(),
                     format!("tokenbar login {}", account.name),
+                ),
+                ProviderKind::Grok => (
+                    "No Grok session".to_string(),
+                    format!("tokenbar login {} --provider grok", account.name),
                 ),
             };
             f.render_widget(

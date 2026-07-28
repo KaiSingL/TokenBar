@@ -1,3 +1,4 @@
+pub mod grok;
 pub mod opencodego;
 pub mod zai;
 
@@ -30,6 +31,12 @@ pub async fn fetch_for_account(
                 .fetch_usage(&account.name, &api_key)
                 .await
         }
+        ProviderKind::Grok => {
+            let entry = session.ok_or(AppError::InvalidCredentials)?;
+            grok::GrokProvider::new(client.clone(), timeout)
+                .fetch_usage(&account.name, entry)
+                .await
+        }
     }
 }
 
@@ -37,6 +44,7 @@ pub fn has_credentials(account: &Account, session: Option<&SessionEntry>) -> boo
     match account.provider {
         ProviderKind::OpenCodeGo => session.map(|s| !s.cookie.trim().is_empty()).unwrap_or(false),
         ProviderKind::Zai => resolve_zai_api_key(account).is_some(),
+        ProviderKind::Grok => session.map(|s| s.has_grok_session()).unwrap_or(false),
     }
 }
 
