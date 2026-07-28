@@ -145,9 +145,16 @@ impl Poller {
                 continue;
             }
 
+            // Keep last snapshot visible during refresh; only show Loading on first fetch.
             {
                 let mut state = state.write().await;
-                state.statuses[i] = AccountStatus::Loading;
+                let needs_loading = matches!(
+                    state.statuses[i],
+                    AccountStatus::NoSession | AccountStatus::Error { .. }
+                );
+                if needs_loading {
+                    state.statuses[i] = AccountStatus::Loading;
+                }
             }
 
             let handle = tokio::spawn(async move {

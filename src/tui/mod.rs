@@ -8,7 +8,7 @@ use crossterm::execute;
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
@@ -17,7 +17,7 @@ use tokio::time::interval;
 
 use crate::app::{AppEvent, AppState};
 use crate::model::AccountStatus;
-use crate::tui::widgets::render_account_card;
+use crate::tui::widgets::{card_height, render_account_card};
 
 mod widgets;
 
@@ -37,7 +37,10 @@ pub async fn run_tui(
     let res = run_loop(&mut terminal, state, event_tx).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        crossterm::terminal::LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     res
@@ -51,7 +54,6 @@ async fn run_loop(
     let mut events = EventStream::new();
     let mut ticker = interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // First tick completes immediately; draw once then wait.
     ticker.tick().await;
 
     loop {
@@ -113,20 +115,51 @@ fn render_layout(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
 
 fn render_header(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
     let last_refresh = match app_state.last_refresh {
-        Some(t) => format!("last refresh · {}", t.format("%H:%M:%S")),
+        Some(t) => format!("last {}", t.format("%H:%M:%S")),
         None => "not yet refreshed".into(),
     };
     let interval = app_state.config.refresh_interval_secs;
-    let header = Line::from(vec![
-        Span::styled(" TokenBar ", Style::default().bold()),
+
+    let mut left = vec![
         Span::styled(
-            format!("{last_refresh} · every {interval}s"),
-            Style::default().dim(),
+            " TokenBar ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
-    ]);
+        Span::styled("·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(last_refresh, Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("  ·  every {interval}s"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+
+    if app_state.is_refreshing {
+        left.push(Span::raw("  "));
+        left.push(Span::styled(
+            "refreshing…",
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+
+    let right = if app_state.is_refreshing {
+        Span::styled("● sync", Style::default().fg(Color::Cyan))
+    } else if app_state.last_refresh.is_some() {
+        Span::styled("● live", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("○ idle", Style::default().fg(Color::DarkGray))
+    };
+
+    let header_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(10), Constraint::Length(8)])
+        .split(area);
+
+    f.render_widget(Paragraph::new(Line::from(left)), header_chunks[0]);
     f.render_widget(
-        Paragraph::new(header).style(Style::default().fg(Color::Cyan)),
-        area,
+        Paragraph::new(Line::from(right)).right_aligned(),
+        header_chunks[1],
     );
 }
 
@@ -134,42 +167,73 @@ fn render_body(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
     let count = app_state.accounts.len();
     if count == 0 {
         f.render_widget(
-            Paragraph::new("No accounts configured. Create auth.toml with [[accounts]] entries.")
+            Paragraph::new("No accounts configured. Add [[accounts]] entries to auth.toml.")
                 .style(Style::default().fg(Color::DarkGray)),
             area,
         );
         return;
     }
 
-    let constraints = std::iter::repeat(Constraint::Length(5))
-        .take(count)
-        .chain(std::iter::once(Constraint::Min(0)))
-        .collect::<Vec<_>>();
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(count * 2);
+    for i in 0..count {
+        let status = app_state
+            .statuses
+            .get(i)
+            .cloned()
+            .unwrap_or(AccountStatus::Error {
+                message: "unknown state".into(),
+                failed_at: Utc::now(),
+            });
+        constraints.push(Constraint::Length(card_height(&status)));
+        if i + 1 < count {
+            constraints.push(Constraint::Length(1)); // gap
+        }
+    }
+    constraints.push(Constraint::Min(0));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .spacing(1)
         .split(area);
 
+    let mut chunk_idx = 0usize;
     for (i, account) in app_state.accounts.iter().enumerate() {
-        if i >= chunks.len() {
+        if chunk_idx >= chunks.len() {
             break;
         }
-        let status = app_state.statuses.get(i).cloned().unwrap_or(AccountStatus::Error {
-            message: "unknown state".into(),
-            failed_at: Utc::now(),
-        });
-        render_account_card(f, chunks[i], account, &status);
+        let status = app_state
+            .statuses
+            .get(i)
+            .cloned()
+            .unwrap_or(AccountStatus::Error {
+                message: "unknown state".into(),
+                failed_at: Utc::now(),
+            });
+        render_account_card(f, chunks[chunk_idx], account, &status);
+        chunk_idx += 1;
+        if i + 1 < count {
+            chunk_idx += 1; // skip gap
+        }
     }
 }
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect) {
     let footer = Line::from(vec![
-        Span::styled(" [R]", Style::default().fg(Color::Green)).bold(),
-        Span::raw(" refresh "),
-        Span::styled("[Q]", Style::default().fg(Color::Red)).bold(),
-        Span::raw(" quit"),
+        Span::styled(
+            " [r]",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" refresh", Style::default().fg(Color::DarkGray)),
+        Span::raw("   "),
+        Span::styled(
+            "[q]",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" quit", Style::default().fg(Color::DarkGray)),
     ]);
-    f.render_widget(Paragraph::new(footer).dim(), area);
+    f.render_widget(Paragraph::new(footer), area);
 }

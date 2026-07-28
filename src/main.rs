@@ -1,3 +1,4 @@
+use std::fs::OpenOptions;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -72,13 +73,6 @@ enum SessionCommands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("warn,tokenbar=debug")),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     let data_dir = config::resolve_data_dir(cli.data_dir.as_deref())?;
@@ -88,17 +82,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::resolve_config_path(&data_dir)
     };
 
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,tokenbar=debug"));
+
     match cli.command {
         Some(Commands::Session { action }) => {
+            init_console_tracing(env_filter);
             run_session_command(action, &data_dir)?;
             Ok(())
         }
         Some(Commands::Login { name, force }) => {
+            init_console_tracing(env_filter);
             login::run_login_flow(&name, force, &data_dir, &config_path)?;
             Ok(())
         }
-        None => run_tui(&config_path, &data_dir).await,
+        None => {
+            init_file_tracing(&data_dir, env_filter)?;
+            run_tui(&config_path, &data_dir).await
+        }
     }
+}
+
+fn init_console_tracing(env_filter: EnvFilter) {
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+}
+
+fn init_file_tracing(
+    data_dir: &std::path::Path,
+    env_filter: EnvFilter,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(data_dir)?;
+    let log_path = data_dir.join("tokenbar.log");
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(file)
+        .with_ansi(false)
+        .init();
+    // Use eprintln only before alternate screen; once TUI starts logs go to file.
+    eprintln!("Logging to {}", log_path.display());
+    Ok(())
 }
 
 fn run_session_command(
