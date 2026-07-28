@@ -112,6 +112,8 @@ fn run_opencode_login(
 
     let partition_dir = login_partition_dir(data_dir, account_name);
     // Always start clean so leftover cookies cannot false-trigger success.
+    // On Windows/Linux this wipes the WebView2/WebKitGTK user-data dir.
+    // On macOS WKWebView ignores this path — isolation uses data_store_identifier.
     if partition_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&partition_dir) {
             warn!(
@@ -122,7 +124,7 @@ fn run_opencode_login(
     }
     std::fs::create_dir_all(&partition_dir).map_err(AppError::Io)?;
 
-    let captured = open_login_webview(&partition_dir)?;
+    let captured = open_login_webview(&partition_dir, account_name)?;
 
     sessions.sessions.insert(
         account_name.to_string(),
@@ -156,7 +158,43 @@ fn login_partition_dir(data_dir: &Path, account_name: &str) -> PathBuf {
     data_dir.join("webview").join(format!("login-{safe}"))
 }
 
-fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError> {
+/// Stable 16-byte id for WKWebsiteDataStore (macOS 14+).
+/// Different accounts must not share cookies; path-based WebContext is a no-op on WKWebView.
+fn login_data_store_id(account_name: &str) -> [u8; 16] {
+    // Two independent FNV-1a 64-bit streams → 128-bit identifier (stable across runs).
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h0 = FNV_OFFSET;
+    let mut h1 = FNV_OFFSET ^ 0x9e3779b97f4a7c15;
+    for b in b"tokenbar.login.v1\0".iter().chain(account_name.as_bytes()) {
+        h0 ^= u64::from(*b);
+        h0 = h0.wrapping_mul(FNV_PRIME);
+        h1 ^= u64::from(*b).rotate_left(13);
+        h1 = h1.wrapping_mul(FNV_PRIME);
+    }
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&h0.to_le_bytes());
+    id[8..].copy_from_slice(&h1.to_le_bytes());
+    id
+}
+
+fn clear_webview_cookies(webview: &wry::WebView) {
+    match webview.cookies() {
+        Ok(cookies) => {
+            for c in cookies {
+                if let Err(e) = webview.delete_cookie(&c) {
+                    debug!("failed to delete cookie {}: {e}", c.name());
+                }
+            }
+        }
+        Err(e) => warn!("failed to list cookies for wipe: {e}"),
+    }
+}
+
+fn open_login_webview(
+    partition_dir: &Path,
+    account_name: &str,
+) -> Result<CapturedSession, AppError> {
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -173,8 +211,8 @@ fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError>
     let url_for_load = latest_url.clone();
     let proxy_for_load = proxy.clone();
 
+    // Do not navigate until cookies are wiped (avoids auto-login on first paint).
     let builder = WebViewBuilder::new_with_web_context(&mut web_context)
-        .with_url(LOGIN_URL)
         .with_navigation_handler(move |url| {
             if let Ok(mut guard) = url_for_nav.lock() {
                 *guard = url;
@@ -190,10 +228,26 @@ fn open_login_webview(partition_dir: &Path) -> Result<CapturedSession, AppError>
             }
         });
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let builder = {
+        use wry::WebViewBuilderExtDarwin;
+        let store_id = login_data_store_id(account_name);
+        debug!(
+            "macOS login data_store_identifier={:02x?}",
+            store_id
+        );
+        builder.with_data_store_identifier(store_id)
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let _ = account_name;
+
     let webview = builder
         .build(&window)
         .map_err(|e| AppError::Login(format_webview_error(e)))?;
 
+    // Fresh login surface: drop any leftover cookies in this partition/store.
+    clear_webview_cookies(&webview);
     let _ = webview.load_url(LOGIN_URL);
 
     let started = Instant::now();
@@ -586,5 +640,15 @@ mod tests {
         assert!(!is_valid_auth_cookie_value(&"x".repeat(100))); // long but not Fe26 and < 120
         assert!(is_valid_auth_cookie_value(&long_auth()));
         assert!(is_valid_auth_cookie_value(&"z".repeat(120)));
+    }
+
+    #[test]
+    fn login_data_store_id_stable_and_unique() {
+        let a = login_data_store_id("Personal");
+        let b = login_data_store_id("Personal");
+        let c = login_data_store_id("Work");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, [0u8; 16]);
     }
 }
