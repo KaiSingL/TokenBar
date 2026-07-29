@@ -373,11 +373,18 @@ fn run_session_command(
                         println!("    email: {email}");
                     }
                     if let Some(exp) = entry.expires_at {
-                        println!("    expires_at: {}", exp.to_rfc3339());
+                        println!(
+                            "    expires_at: {}",
+                            exp.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M:%S")
+                        );
                     }
                     println!(
                         "    updated: {} ({} ago)",
-                        entry.updated_at.format("%Y-%m-%d %H:%M:%S"),
+                        entry
+                            .updated_at
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S"),
                         format_age(age.num_seconds())
                     );
                 }

@@ -18,6 +18,7 @@ pub const DEFAULT_SCOPES: &str =
     "openid profile email offline_access api:access grok-cli:access";
 
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const GRANT_REFRESH_TOKEN: &str = "refresh_token";
 
 #[derive(Debug, Clone)]
 pub struct OAuthTokens {
@@ -263,6 +264,73 @@ fn poll_once(
         email,
         user_id,
     }))
+}
+
+/// Refresh an access token using a refresh_token grant (async; for the poller).
+pub async fn refresh_access_token(
+    client: &reqwest::Client,
+    refresh_token: &str,
+    timeout: std::time::Duration,
+) -> Result<OAuthTokens, AppError> {
+    let rt = refresh_token.trim();
+    if rt.is_empty() {
+        return Err(AppError::InvalidCredentials);
+    }
+    let cid = client_id();
+    let body = format!(
+        "grant_type={}&refresh_token={}&client_id={}",
+        urlencoding::encode(GRANT_REFRESH_TOKEN),
+        urlencoding::encode(rt),
+        urlencoding::encode(&cid),
+    );
+    let resp = client
+        .post(TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
+        .body(body)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(AppError::Network)?;
+
+    let status = resp.status();
+    let text = resp.text().await.map_err(AppError::Network)?;
+
+    let tok: TokenResponse = serde_json::from_str(&text).map_err(|e| {
+        AppError::Parse(format!("Grok refresh token JSON: {e}"))
+    })?;
+
+    if let Some(err) = tok.error.as_deref() {
+        debug!("grok refresh error={err}");
+        return Err(AppError::InvalidCredentials);
+    }
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(AppError::InvalidCredentials);
+    }
+    if !status.is_success() {
+        return Err(AppError::Api(format!(
+            "Grok refresh HTTP {status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+
+    let access_token = tok
+        .access_token
+        .filter(|s| !s.is_empty())
+        .ok_or(AppError::InvalidCredentials)?;
+
+    let expires_at = tok
+        .expires_in
+        .map(|secs| Utc::now() + chrono::Duration::seconds(secs.max(0)));
+
+    // Prefer rotated refresh token; caller keeps the old one if None.
+    Ok(OAuthTokens {
+        access_token,
+        refresh_token: tok.refresh_token.filter(|s| !s.is_empty()),
+        expires_at,
+        email: None,
+        user_id: None,
+    })
 }
 
 #[derive(Debug, Deserialize)]

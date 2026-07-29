@@ -47,7 +47,6 @@ pub struct Poller {
     refresh_interval: Duration,
     request_timeout: Duration,
     max_concurrent: usize,
-    #[allow(dead_code)]
     sessions_path: PathBuf,
     sessions: HashMap<String, SessionEntry>,
 }
@@ -137,6 +136,7 @@ impl Poller {
             let timeout = self.request_timeout;
             let state = self.state.clone();
             let session_entry = self.sessions.get(&account.name).cloned();
+            let account_name = account.name.clone();
 
             if !api::has_credentials(&account, session_entry.as_ref()) {
                 let mut state = state.write().await;
@@ -161,43 +161,7 @@ impl Poller {
                 let result =
                     api::fetch_for_account(&account, session_entry.as_ref(), &client, timeout)
                         .await;
-
-                let mut state = state.write().await;
-                match result {
-                    Ok(snapshot) => {
-                        state.statuses[i] = AccountStatus::Ready(snapshot);
-                    }
-                    Err(e) => {
-                        error!("Account '{}' fetch failed: {e}", account.name);
-                        match &e {
-                            AppError::InvalidCredentials => {
-                                warn!(
-                                    "Account '{}' has invalid credentials",
-                                    account.name
-                                );
-                                state.statuses[i] = AccountStatus::NoSession;
-                            }
-                            _ => {
-                                let already_had_ready =
-                                    matches!(&state.statuses[i], AccountStatus::Ready(_));
-                                if already_had_ready {
-                                    if let AccountStatus::Ready(ref last) = state.statuses[i] {
-                                        state.statuses[i] = AccountStatus::Stale {
-                                            last: last.clone(),
-                                            error: e.to_string(),
-                                            failed_at: Utc::now(),
-                                        };
-                                    }
-                                } else {
-                                    state.statuses[i] = AccountStatus::Error {
-                                        message: e.to_string(),
-                                        failed_at: Utc::now(),
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
+                (i, account_name, result)
             });
             handles.push(handle);
 
@@ -206,8 +170,59 @@ impl Poller {
             }
         }
 
+        let mut sessions_dirty = false;
         for handle in handles {
-            let _ = handle.await;
+            let Ok((i, account_name, result)) = handle.await else {
+                continue;
+            };
+            let mut state = self.state.write().await;
+            match result {
+                Ok(fetch) => {
+                    if let Some(updated) = fetch.session {
+                        self.sessions.insert(account_name.clone(), updated);
+                        sessions_dirty = true;
+                    }
+                    state.statuses[i] = AccountStatus::Ready(fetch.snapshot);
+                }
+                Err(e) => {
+                    error!("Account '{account_name}' fetch failed: {e}");
+                    match &e {
+                        AppError::InvalidCredentials => {
+                            warn!("Account '{account_name}' has invalid credentials");
+                            state.statuses[i] = AccountStatus::NoSession;
+                        }
+                        _ => {
+                            let already_had_ready =
+                                matches!(&state.statuses[i], AccountStatus::Ready(_));
+                            if already_had_ready {
+                                if let AccountStatus::Ready(ref last) = state.statuses[i] {
+                                    state.statuses[i] = AccountStatus::Stale {
+                                        last: last.clone(),
+                                        error: e.to_string(),
+                                        failed_at: Utc::now(),
+                                    };
+                                }
+                            } else {
+                                state.statuses[i] = AccountStatus::Error {
+                                    message: e.to_string(),
+                                    failed_at: Utc::now(),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if sessions_dirty {
+            let bundle = crate::model::Sessions {
+                sessions: self.sessions.clone(),
+            };
+            if let Err(e) = session::save_sessions(&self.sessions_path, &bundle) {
+                warn!("Failed to persist refreshed sessions: {e}");
+            } else {
+                info!("Persisted refreshed OAuth sessions");
+            }
         }
 
         {

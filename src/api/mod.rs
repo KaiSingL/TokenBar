@@ -7,35 +7,50 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::model::{Account, ProviderKind, SessionEntry, UsageSnapshot};
 
+pub struct FetchResult {
+    pub snapshot: UsageSnapshot,
+    /// When set, replace the stored session for this account (e.g. refreshed Grok tokens).
+    pub session: Option<SessionEntry>,
+}
+
 /// Fetch usage for an account using provider-specific credentials.
 pub async fn fetch_for_account(
     account: &Account,
     session: Option<&SessionEntry>,
     client: &reqwest::Client,
     timeout: Duration,
-) -> Result<UsageSnapshot, AppError> {
+) -> Result<FetchResult, AppError> {
     match account.provider {
         ProviderKind::OpenCodeGo => {
             let entry = session.ok_or(AppError::InvalidCredentials)?;
-            opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
+            let snapshot = opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
                 .fetch_usage(
                     &account.name,
                     &entry.cookie,
                     entry.workspace_id.as_deref(),
                 )
-                .await
+                .await?;
+            Ok(FetchResult {
+                snapshot,
+                session: None,
+            })
         }
         ProviderKind::Zai => {
             let api_key = resolve_zai_api_key(account).ok_or(AppError::InvalidCredentials)?;
-            zai::ZaiProvider::new(client.clone(), timeout)
+            let snapshot = zai::ZaiProvider::new(client.clone(), timeout)
                 .fetch_usage(&account.name, &api_key)
-                .await
+                .await?;
+            Ok(FetchResult {
+                snapshot,
+                session: None,
+            })
         }
         ProviderKind::Grok => {
             let entry = session.ok_or(AppError::InvalidCredentials)?;
-            grok::GrokProvider::new(client.clone(), timeout)
+            let (snapshot, session) = grok::GrokProvider::new(client.clone(), timeout)
                 .fetch_usage(&account.name, entry)
-                .await
+                .await?;
+            Ok(FetchResult { snapshot, session })
         }
     }
 }
