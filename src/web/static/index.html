@@ -7,6 +7,9 @@
   <meta name="theme-color" content="#0c0d10" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" href="/favicon.png" type="image/png" sizes="180x180" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <title>TokenBar</title>
   <style>
     :root {
@@ -51,6 +54,17 @@
       font-size: 1.35rem;
       font-weight: 700;
       letter-spacing: -0.03em;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.28rem;
+    }
+    .brand-icon {
+      width: 2.35rem;
+      height: 2.35rem;
+      flex-shrink: 0;
+      display: block;
     }
     .meta {
       margin-top: 0.2rem;
@@ -189,7 +203,10 @@
   <div class="wrap">
     <header class="app">
       <div>
-        <h1>TokenBar</h1>
+        <div class="brand">
+          <img class="brand-icon" src="/icon.svg" width="38" height="38" alt="" />
+          <h1>TokenBar</h1>
+        </div>
         <div class="meta" id="meta">Loading…</div>
       </div>
       <div class="header-actions">

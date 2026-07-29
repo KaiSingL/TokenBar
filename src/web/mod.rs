@@ -22,6 +22,23 @@ use crate::model::{Account, AccountStatus, UsageSnapshot, UsageWindow};
 use crate::tui::widgets::format_reset;
 
 const INDEX_HTML: &str = include_str!("static/index.html");
+const ICON_SVG: &[u8] = include_bytes!("static/icon.svg");
+const FAVICON_PNG: &[u8] = include_bytes!("static/favicon.png");
+const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
+
+fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
 
 #[derive(Clone)]
 struct WebState {
@@ -70,6 +87,26 @@ pub async fn run_server(
         .route("/api/status", get(status_handler))
         .route("/api/refresh", post(refresh_handler))
         .route("/healthz", get(|| async { StatusCode::OK }))
+        .route(
+            "/icon.svg",
+            get(|| async { static_bytes(ICON_SVG, "image/svg+xml; charset=utf-8") }),
+        )
+        .route(
+            "/favicon.png",
+            get(|| async { static_bytes(FAVICON_PNG, "image/png") }),
+        )
+        .route(
+            "/favicon.ico",
+            get(|| async { static_bytes(FAVICON_PNG, "image/png") }),
+        )
+        .route(
+            "/favicon.svg",
+            get(|| async { static_bytes(FAVICON_SVG, "image/svg+xml; charset=utf-8") }),
+        )
+        .route(
+            "/apple-touch-icon.png",
+            get(|| async { static_bytes(FAVICON_PNG, "image/png") }),
+        )
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
