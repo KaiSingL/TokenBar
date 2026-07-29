@@ -61,7 +61,6 @@
       display: flex;
       flex-direction: column;
       align-items: flex-end;
-      gap: 0.45rem;
       flex-shrink: 0;
     }
     .live {
@@ -86,23 +85,6 @@
       border-radius: 50%;
       background: currentColor;
       box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
-    }
-    button.refresh {
-      appearance: none;
-      border: 1px solid var(--border);
-      background: var(--card);
-      color: var(--fg);
-      font: inherit;
-      font-size: 0.78rem;
-      font-weight: 600;
-      border-radius: 999px;
-      padding: 0.35rem 0.75rem;
-      cursor: pointer;
-    }
-    button.refresh:active { background: var(--border); }
-    button.refresh:disabled {
-      opacity: 0.55;
-      cursor: default;
     }
     .cards { display: grid; gap: 0.75rem; }
     .card {
@@ -212,7 +194,6 @@
       </div>
       <div class="header-actions">
         <div class="live idle" id="live">idle</div>
-        <button type="button" class="refresh" id="refreshBtn">Refresh</button>
       </div>
     </header>
     <div class="cards" id="cards">
@@ -224,7 +205,6 @@
     const cardsEl = $("cards");
     const metaEl = $("meta");
     const liveEl = $("live");
-    const refreshBtn = $("refreshBtn");
     const UI_POLL_MS = 10_000;
     let pollTimer = null;
     let tickTimer = null;
@@ -387,21 +367,6 @@
       pollTimer = setTimeout(fetchStatus, wait);
     }
 
-    async function forceRefresh() {
-      refreshBtn.disabled = true;
-      try {
-        await fetch("/api/refresh", { method: "POST", cache: "no-store" });
-        liveEl.className = "live sync";
-        liveEl.textContent = "sync";
-        setTimeout(fetchStatus, 400);
-      } catch {
-        /* next poll will surface errors */
-      } finally {
-        setTimeout(() => { refreshBtn.disabled = false; }, 800);
-      }
-    }
-
-    refreshBtn.addEventListener("click", forceRefresh);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") fetchStatus();
     });
