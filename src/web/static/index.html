@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#0c0d10" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>TokenBar</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0d10;
+      --fg: #e8eaed;
+      --muted: #9aa0a6;
+      --dim: #5f6368;
+      --card: #16181d;
+      --border: #2a2e37;
+      --accent: #8ab4f8;
+      --ok: #81c995;
+      --warn: #fdd663;
+      --bad: #f28b82;
+      --bar-track: #2a2e37;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      min-height: 100dvh;
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .wrap {
+      max-width: 36rem;
+      margin: 0 auto;
+      padding: calc(1rem + var(--safe-top)) 1rem calc(1.5rem + var(--safe-bottom));
+    }
+    header.app {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1.1rem;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .meta {
+      margin-top: 0.2rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .header-actions {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.45rem;
+      flex-shrink: 0;
+    }
+    .live {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--ok);
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 999px;
+      padding: 0.35rem 0.7rem;
+      white-space: nowrap;
+    }
+    .live.sync { color: var(--accent); }
+    .live.idle { color: var(--dim); }
+    .live::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
+    }
+    button.refresh {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--fg);
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      cursor: pointer;
+    }
+    button.refresh:active { background: var(--border); }
+    button.refresh:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .cards { display: grid; gap: 0.75rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.9rem 1rem 1rem;
+    }
+    .card.error { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+    .card.stale { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+    .card.no_session { opacity: 0.78; }
+    .card-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .card-title {
+      font-weight: 650;
+      font-size: 1rem;
+      letter-spacing: -0.01em;
+    }
+    .provider {
+      color: var(--dim);
+      font-weight: 500;
+      font-size: 0.85rem;
+    }
+    .badge {
+      font-size: 0.72rem;
+      font-weight: 650;
+      text-transform: lowercase;
+      letter-spacing: 0.02em;
+      color: var(--ok);
+    }
+    .badge.loading { color: var(--accent); }
+    .badge.stale { color: var(--warn); }
+    .badge.error { color: var(--bad); }
+    .badge.no_session { color: var(--dim); }
+    .meter { margin-top: 0.65rem; }
+    .meter:first-of-type { margin-top: 0; }
+    .meter-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.3rem;
+    }
+    .meter-label { color: var(--muted); font-size: 0.82rem; min-width: 3.5rem; }
+    .meter-pct {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+    .meter-pct.ok { color: var(--ok); }
+    .meter-pct.warn { color: var(--warn); }
+    .meter-pct.bad { color: var(--bad); }
+    .bar {
+      height: 0.55rem;
+      border-radius: 999px;
+      background: var(--bar-track);
+      overflow: hidden;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: var(--ok);
+      transition: width 0.35s ease;
+    }
+    .bar > i.warn { background: var(--warn); }
+    .bar > i.bad { background: var(--bad); }
+    .reset {
+      margin-top: 0.28rem;
+      color: var(--dim);
+      font-size: 0.75rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .note {
+      margin-top: 0.7rem;
+      color: var(--warn);
+      font-size: 0.78rem;
+      word-break: break-word;
+    }
+    .note.bad { color: var(--bad); }
+    .note.dim { color: var(--dim); }
+    .empty, .err-page {
+      text-align: center;
+      color: var(--muted);
+      padding: 2.5rem 1rem;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+    }
+    @media (min-width: 480px) {
+      .wrap { padding-top: calc(1.5rem + var(--safe-top)); }
+      h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="app">
+      <div>
+        <h1>TokenBar</h1>
+        <div class="meta" id="meta">Loading…</div>
+      </div>
+      <div class="header-actions">
+        <div class="live idle" id="live">idle</div>
+        <button type="button" class="refresh" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+    <div class="cards" id="cards">
+      <div class="empty">Fetching usage…</div>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const cardsEl = $("cards");
+    const metaEl = $("meta");
+    const liveEl = $("live");
+    const refreshBtn = $("refreshBtn");
+    const UI_POLL_MS = 10_000;
+    let pollTimer = null;
+    let tickTimer = null;
+    let intervalSecs = 60;
+    /** @type {{ fetchedAt: number, accounts: any[] } | null} */
+    let snapshot = null;
+
+    function level(pct) {
+      if (pct >= 85) return "bad";
+      if (pct >= 60) return "warn";
+      return "ok";
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "not yet";
+      try {
+        return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      } catch {
+        return iso;
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function statusLabel(status) {
+      if (status === "ready") return "synced";
+      return String(status).replaceAll("_", " ");
+    }
+
+    function providerLabel(provider) {
+      const p = String(provider || "");
+      if (p === "opencode_go" || p === "open_code_go") return "opencode go";
+      return p.replaceAll("_", " ");
+    }
+
+    function formatReset(secs) {
+      secs = Math.max(0, Math.floor(Number(secs) || 0));
+      if (secs === 0) return "now";
+      const days = Math.floor(secs / 86400);
+      const hours = Math.floor((secs % 86400) / 3600);
+      const mins = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+      if (hours > 0) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+      if (mins > 0) return `${mins}m`;
+      return `${s}s`;
+    }
+
+    function remainingReset(baseSec, fetchedAt) {
+      const elapsed = Math.floor((Date.now() - fetchedAt) / 1000);
+      return Math.max(0, (Number(baseSec) || 0) - elapsed);
+    }
+
+    function render(data, fetchedAt) {
+      intervalSecs = data.refresh_interval_secs || 60;
+      const refreshing = !!data.is_refreshing;
+      liveEl.className = "live " + (refreshing ? "sync" : data.last_refresh ? "" : "idle");
+      liveEl.textContent = refreshing ? "sync" : data.last_refresh ? "live" : "idle";
+      metaEl.textContent = `last ${fmtTime(data.last_refresh)} · poll ${intervalSecs}s`;
+
+      const accounts = data.accounts || [];
+      snapshot = { fetchedAt: fetchedAt || Date.now(), accounts };
+
+      if (!accounts.length) {
+        cardsEl.innerHTML = `<div class="empty">No accounts configured.<br/>Add accounts with <code>tokenbar login</code>.</div>`;
+        return;
+      }
+
+      paintCards();
+    }
+
+    function paintCards() {
+      if (!snapshot) return;
+      const { fetchedAt, accounts } = snapshot;
+
+      cardsEl.innerHTML = accounts.map((a) => {
+        const status = a.status || "error";
+        let body = "";
+        if (a.meters && a.meters.length) {
+          body = a.meters.map((m, i) => {
+            const pct = Math.max(0, Math.min(100, Number(m.usage_percent) || 0));
+            const lv = level(pct);
+            const left = remainingReset(m.reset_in_sec, fetchedAt);
+            return `<div class="meter">
+              <div class="meter-row">
+                <span class="meter-label">${escapeHtml(m.label)}</span>
+                <span class="meter-pct ${lv}">${pct.toFixed(0)}%</span>
+              </div>
+              <div class="bar"><i class="${lv}" style="width:${pct}%"></i></div>
+              <div class="reset" data-meter="${i}">resets ${escapeHtml(formatReset(left))}</div>
+            </div>`;
+          }).join("");
+        } else if (status === "loading") {
+          body = `<div class="note dim">Fetching usage…</div>`;
+        } else if (status === "no_session") {
+          body = `<div class="note dim">${escapeHtml(a.error || "No session")}</div>`;
+        } else if (status === "error") {
+          body = `<div class="note bad">${escapeHtml(a.error || "Error")}</div>`;
+        }
+
+        if (status === "stale" && a.error) {
+          body += `<div class="note">stale · ${escapeHtml(a.error)}</div>`;
+        }
+
+        return `<article class="card ${escapeHtml(status)}">
+          <div class="card-top">
+            <div>
+              <span class="card-title">${escapeHtml(a.name)}</span>
+              <span class="provider"> · ${escapeHtml(providerLabel(a.provider))}</span>
+            </div>
+            <span class="badge ${escapeHtml(status)}">${escapeHtml(statusLabel(status))}</span>
+          </div>
+          ${body}
+        </article>`;
+      }).join("");
+    }
+
+    function tickResets() {
+      if (!snapshot) return;
+      const articles = cardsEl.querySelectorAll(".card");
+      snapshot.accounts.forEach((a, ai) => {
+        if (!a.meters || !a.meters.length) return;
+        const article = articles[ai];
+        if (!article) return;
+        a.meters.forEach((m, mi) => {
+          const el = article.querySelector(`.reset[data-meter="${mi}"]`);
+          if (!el) return;
+          const left = remainingReset(m.reset_in_sec, snapshot.fetchedAt);
+          el.textContent = "resets " + formatReset(left);
+        });
+      });
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        render(data, Date.now());
+        schedulePoll();
+      } catch (e) {
+        snapshot = null;
+        cardsEl.innerHTML = `<div class="err-page">Could not load status.<br/>${escapeHtml(e.message || e)}</div>`;
+        liveEl.className = "live idle";
+        liveEl.textContent = "offline";
+        metaEl.textContent = "connection error";
+        schedulePoll(5000);
+      }
+    }
+
+    function schedulePoll(ms) {
+      if (pollTimer) clearTimeout(pollTimer);
+      const wait = ms != null ? ms : UI_POLL_MS;
+      pollTimer = setTimeout(fetchStatus, wait);
+    }
+
+    async function forceRefresh() {
+      refreshBtn.disabled = true;
+      try {
+        await fetch("/api/refresh", { method: "POST", cache: "no-store" });
+        liveEl.className = "live sync";
+        liveEl.textContent = "sync";
+        setTimeout(fetchStatus, 400);
+      } catch {
+        /* next poll will surface errors */
+      } finally {
+        setTimeout(() => { refreshBtn.disabled = false; }, 800);
+      }
+    }
+
+    refreshBtn.addEventListener("click", forceRefresh);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") fetchStatus();
+    });
+    tickTimer = setInterval(tickResets, 1000);
+    fetchStatus();
+  </script>
+</body>
+</html>

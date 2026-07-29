@@ -19,7 +19,7 @@ use crate::app::{AppEvent, AppState};
 use crate::model::AccountStatus;
 use crate::tui::widgets::{card_height, render_account_card};
 
-mod widgets;
+pub mod widgets;
 
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 

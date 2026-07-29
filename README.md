@@ -75,13 +75,35 @@ tokenbar login grokme --provider grok
 
 # Launch the dashboard
 tokenbar
+
+# Web dashboard (mobile-friendly; loopback for private tunnel)
+tokenbar serve
+# open http://127.0.0.1:8790
 ```
+
+## Web dashboard
+
+```shell
+tokenbar serve                  # 127.0.0.1:8790
+tokenbar serve -p 8790          # same
+tokenbar serve --bind 127.0.0.1 --port 8790
+```
+
+| Path | Description |
+|---|---|
+| `GET /` | Mobile usage UI (auto-refresh) |
+| `GET /api/status` | JSON snapshot of all accounts |
+| `POST /api/refresh` | Force a poll cycle |
+| `GET /healthz` | Liveness |
+
+Binds **loopback only** by default so Cloudflare Access + Tunnel can expose it privately (e.g. `usage.kaising.net`). Do not bind `0.0.0.0` unless you intentionally want LAN access without Access.
 
 ## CLI reference
 
 | Command | Description |
 |---|---|
 | `tokenbar` | Launch the TUI dashboard |
+| `tokenbar serve` | Mobile-friendly web dashboard (`127.0.0.1:8790`) |
 | `tokenbar status` | Print account status (session age, workspace IDs) |
 | `tokenbar login <name>` | Log in to an OpenCode Go account (opens webview) |
 | `tokenbar login <name> --provider zai --api-key <key>` | Save a ZAI API key |
@@ -167,11 +189,13 @@ src/
 │   ├── opencodego.rs    # OpenCode Go scraping
 │   ├── zai.rs           # ZAI API client
 │   └── grok/            # Grok OAuth + billing
-└── tui/
-    ├── mod.rs           # TUI event loop and layout
-    └── widgets.rs       # Account card and meter rendering
+├── tui/
+│   ├── mod.rs           # TUI event loop and layout
+│   └── widgets.rs       # Account card and meter rendering
+└── web/
+    ├── mod.rs           # axum server + /api/status
+    └── static/index.html
 ```
-
 ## Running tests
 
 ```shell

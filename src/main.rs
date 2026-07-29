@@ -14,6 +14,7 @@ mod login;
 mod model;
 mod session;
 mod tui;
+mod web;
 
 #[derive(Parser)]
 #[command(name = "tokenbar", about = "TUI monitor for AI subscription plan limits")]
@@ -36,6 +37,15 @@ struct Cli {
 enum Commands {
     /// Show accounts and session status
     Status,
+    /// Serve mobile-friendly web usage dashboard (loopback by default)
+    Serve {
+        /// Bind address (use 127.0.0.1 for Cloudflare Tunnel private sites)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// TCP port
+        #[arg(long, short = 'p', default_value_t = 8790)]
+        port: u16,
+    },
     /// Manage session cookies
     Session {
         #[command(subcommand)]
@@ -108,6 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             init_console_tracing(env_filter);
             print_status(&config_path, &data_dir)?;
             Ok(())
+        }
+        Some(Commands::Serve { bind, port }) => {
+            init_file_tracing(&data_dir, env_filter)?;
+            run_serve(&config_path, &data_dir, &bind, port).await
         }
         Some(Commands::Session { action }) => {
             init_console_tracing(env_filter);
@@ -422,4 +436,38 @@ async fn run_tui(
     let _ = poller_handle.await;
 
     tui_result
+}
+
+async fn run_serve(
+    config_path: &std::path::Path,
+    data_dir: &std::path::Path,
+    bind_host: &str,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    debug!("Loading config from {}", config_path.display());
+
+    let app_config = config::load_or_create_config(config_path)?;
+    info!(
+        "Loaded {} account(s) from config (web serve)",
+        app_config.accounts.len()
+    );
+
+    let state = Arc::new(RwLock::new(app::AppState::new(app_config.clone())));
+    let (event_tx, event_rx) = mpsc::channel::<app::AppEvent>(64);
+
+    let poller = app::Poller::new(state.clone(), event_rx, &app_config, data_dir);
+    let poller_handle = tokio::spawn(async move {
+        poller.run().await;
+    });
+
+    let bind: std::net::SocketAddr = format!("{bind_host}:{port}")
+        .parse()
+        .map_err(|e| format!("Invalid bind address {bind_host}:{port}: {e}"))?;
+
+    let serve_result = web::run_server(state, event_tx.clone(), bind).await;
+
+    let _ = event_tx.send(app::AppEvent::Quit).await;
+    let _ = poller_handle.await;
+
+    serve_result
 }
