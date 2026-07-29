@@ -67,7 +67,7 @@ fn meter_count(snapshot: &UsageSnapshot) -> u16 {
 }
 
 fn provider_label(provider: ProviderKind) -> &'static str {
-    provider.as_str()
+    provider.display_label()
 }
 
 fn status_badge(status: &AccountStatus) -> (String, Style) {

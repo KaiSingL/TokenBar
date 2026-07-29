@@ -22,6 +22,15 @@ impl ProviderKind {
         }
     }
 
+    /// Human-facing label for TUI / web UI.
+    pub fn display_label(self) -> &'static str {
+        match self {
+            Self::OpenCodeGo => "OpenCode Go",
+            Self::Zai => "Zai",
+            Self::Grok => "Grok",
+        }
+    }
+
     pub fn parse_cli(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "opencode_go" | "open_code_go" | "opencodego" => Ok(Self::OpenCodeGo),

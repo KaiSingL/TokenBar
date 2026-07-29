@@ -172,7 +172,7 @@ fn init_file_tracing(
 }
 
 fn provider_label(p: model::ProviderKind) -> &'static str {
-    p.as_str()
+    p.display_label()
 }
 
 fn format_age(secs: i64) -> String {
