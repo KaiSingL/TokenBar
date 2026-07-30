@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="TokenBar" width="120" height="120" />
+</p>
+
 # TokenBar
 
 AI subscription usage monitor for your terminal — and optionally in the browser.
@@ -110,6 +114,10 @@ tokenbar serve --bind 127.0.0.1 --port 8790
 | `GET /api/status` | JSON snapshot of all accounts |
 | `POST /api/refresh` | Force a poll cycle |
 | `GET /healthz` | Liveness check |
+| `GET /icon.svg` | Header mark (transparent, edge-to-edge) |
+| `GET /favicon.png` | Tab / home-screen icon (transparent PNG) |
+| `GET /favicon.svg` | SVG favicon (same mark) |
+| `GET /apple-touch-icon.png` | iOS home-screen icon |
 
 **Security notes**
 
@@ -205,6 +213,8 @@ Usage is fetched with the access token from
 ## Project structure
 
 ```
+assets/
+└── logo.png             # README / marketing logo
 src/
 ├── main.rs              # Entry point, CLI definition
 ├── config.rs            # auth.toml load/save
@@ -223,7 +233,11 @@ src/
 │   └── widgets.rs       # Account card and meter rendering
 └── web/
     ├── mod.rs           # HTTP server + /api/status
-    └── static/index.html
+    └── static/
+        ├── index.html   # Mobile dashboard UI
+        ├── icon.svg     # Header icon (no plate)
+        ├── favicon.svg  # Favicon source (no plate)
+        └── favicon.png  # Raster favicon
 ```
 
 ## Running tests
