@@ -26,18 +26,37 @@ const ICON_SVG: &[u8] = include_bytes!("static/icon.svg");
 const FAVICON_PNG: &[u8] = include_bytes!("static/favicon.png");
 const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 
+/// Bump when static icons change (sha256 prefix of icon.svg|favicon.png|favicon.svg).
+/// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
+const ASSET_V: &str = "11788e3a8a";
+
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
         [
             (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            // private: do not let shared CDN edges hold a copy across clients.
+            // must-revalidate: after max-age, revalidate with origin (tunnel).
+            // URL ?v=ASSET_V is the real bust when bytes change.
             (
                 header::CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=86400"),
+                HeaderValue::from_static("private, max-age=3600, must-revalidate"),
             ),
         ],
         body,
     )
         .into_response()
+}
+
+/// Inject content-addressed `?v=` on icon URLs so a new deploy is a new cache key.
+fn index_html() -> String {
+    INDEX_HTML
+        .replace("/icon.svg\"", &format!("/icon.svg?v={ASSET_V}\""))
+        .replace("/favicon.png\"", &format!("/favicon.png?v={ASSET_V}\""))
+        .replace("/favicon.svg\"", &format!("/favicon.svg?v={ASSET_V}\""))
+        .replace(
+            "/apple-touch-icon.png\"",
+            &format!("/apple-touch-icon.png?v={ASSET_V}\""),
+        )
 }
 
 #[derive(Clone)]
@@ -154,8 +173,8 @@ async fn shutdown_signal() {
     info!("Web server shutting down");
 }
 
-async fn index_handler() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index_handler() -> Html<String> {
+    Html(index_html())
 }
 
 async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
