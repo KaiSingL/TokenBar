@@ -28,7 +28,7 @@ const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 
 /// Bump when static icons change (sha256 prefix of icon.svg|favicon.png|favicon.svg).
 /// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
-const ASSET_V: &str = "11788e3a8a";
+const ASSET_V: &str = "96e089cec1";
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
