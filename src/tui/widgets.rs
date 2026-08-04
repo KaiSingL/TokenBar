@@ -44,19 +44,19 @@ pub fn format_reset(secs: u64) -> String {
 }
 
 /// Outer height for an account card (includes border rows).
-pub fn card_height(status: &AccountStatus) -> u16 {
+pub fn card_height(status: &AccountStatus, expanded: bool) -> u16 {
     let inner = match status {
-        AccountStatus::Ready(s) => meter_count(s),
-        AccountStatus::Stale { last: s, .. } => meter_count(s) + 1, // + stale note
+        AccountStatus::Ready(s) => visible_meter_count(s, expanded),
+        AccountStatus::Stale { last: s, .. } => visible_meter_count(s, expanded) + 1,
         AccountStatus::NoSession => 2,
         AccountStatus::Loading => 1,
         AccountStatus::Error { .. } => 2,
     };
-    inner + 2 // borders
+    inner + 2
 }
 
 fn meter_count(snapshot: &UsageSnapshot) -> u16 {
-    let mut n = 1u16; // rolling always present
+    let mut n = 1u16;
     if snapshot.weekly.is_some() {
         n += 1;
     }
@@ -64,6 +64,51 @@ fn meter_count(snapshot: &UsageSnapshot) -> u16 {
         n += 1;
     }
     n
+}
+
+fn all_meters(snapshot: &UsageSnapshot) -> Vec<(&UsageWindow, String)> {
+    let mut meters = Vec::new();
+    meters.push((&snapshot.rolling, snapshot.rolling.label.clone().unwrap_or_else(|| "Rolling".into())));
+    if let Some(ref w) = snapshot.weekly {
+        meters.push((w, w.label.clone().unwrap_or_else(|| "Weekly".into())));
+    }
+    if let Some(ref w) = snapshot.monthly {
+        meters.push((w, w.label.clone().unwrap_or_else(|| "Monthly".into())));
+    }
+    meters
+}
+
+fn hidden_mask(snapshot: &UsageSnapshot) -> Vec<bool> {
+    let meters = all_meters(snapshot);
+    let mut mask = vec![false; meters.len()];
+    let total = meters.len();
+    for i in (1..total).rev() {
+        if meters[i].0.usage_percent >= 100.0 {
+            for slot in mask.iter_mut().take(i) {
+                *slot = true;
+            }
+            break;
+        }
+    }
+    mask
+}
+
+fn hidden_count(snapshot: &UsageSnapshot) -> u16 {
+    hidden_mask(snapshot).iter().filter(|&&h| h).count() as u16
+}
+
+fn visible_meter_count(snapshot: &UsageSnapshot, expanded: bool) -> u16 {
+    let total = meter_count(snapshot);
+    if expanded {
+        return total;
+    }
+    let hidden = hidden_count(snapshot);
+    let visible = total - hidden;
+    if hidden > 0 {
+        visible + 1 // + "▸ N more" indicator
+    } else {
+        visible
+    }
 }
 
 fn provider_label(provider: ProviderKind) -> &'static str {
@@ -80,7 +125,7 @@ fn status_badge(status: &AccountStatus) -> (String, Style) {
     }
 }
 
-pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status: &AccountStatus) {
+pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status: &AccountStatus, expanded: bool) {
     let (badge_text, badge_style) = status_badge(status);
     let title = Line::from(vec![
         Span::raw(" "),
@@ -160,7 +205,7 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
             );
         }
         AccountStatus::Ready(snapshot) => {
-            render_meters(f, inner, snapshot, None);
+            render_meters(f, inner, snapshot, None, expanded);
         }
         AccountStatus::Stale {
             last,
@@ -169,7 +214,7 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
         } => {
             let age = Utc::now().signed_duration_since(*failed_at);
             let note = format!("stale · {} ago · {error}", compact_age(age.num_seconds()));
-            render_meters(f, inner, last, Some(note));
+            render_meters(f, inner, last, Some(note), expanded);
         }
         AccountStatus::Error { message, failed_at } => {
             let age = Utc::now().signed_duration_since(*failed_at);
@@ -199,29 +244,23 @@ fn compact_age(secs: i64) -> String {
     format_reset(secs)
 }
 
-fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_note: Option<String>) {
-    let mut labels: Vec<String> = Vec::new();
-    let mut windows: Vec<&UsageWindow> = Vec::new();
+fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_note: Option<String>, expanded: bool) {
+    let meters = all_meters(snapshot);
+    let mask = hidden_mask(snapshot);
+    let total_hidden = mask.iter().filter(|&&h| h).count();
 
-    labels.push(
-        snapshot
-            .rolling
-            .label
-            .clone()
-            .unwrap_or_else(|| "Rolling".into()),
-    );
-    windows.push(&snapshot.rolling);
+    let visible: Vec<(usize, &(&UsageWindow, String))> = if expanded || total_hidden == 0 {
+        meters.iter().enumerate().collect()
+    } else {
+        meters
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !mask[*i])
+            .collect()
+    };
 
-    if let Some(ref w) = snapshot.weekly {
-        labels.push(w.label.clone().unwrap_or_else(|| "Weekly".into()));
-        windows.push(w);
-    }
-    if let Some(ref m) = snapshot.monthly {
-        labels.push(m.label.clone().unwrap_or_else(|| "Monthly".into()));
-        windows.push(m);
-    }
-
-    let meter_rows = windows.len() as u16;
+    let show_more_indicator = !expanded && total_hidden > 0;
+    let meter_rows = visible.len() as u16 + if show_more_indicator { 1u16 } else { 0 };
     let note_rows = if footer_note.is_some() { 1u16 } else { 0 };
     let total = meter_rows + note_rows;
     if total == 0 || area.height == 0 {
@@ -234,11 +273,24 @@ fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_not
         .constraints(constraints)
         .split(area);
 
-    for (i, window) in windows.iter().enumerate() {
-        if i >= rows.len() {
+    for (row_i, (_meter_i, (window, label))) in visible.iter().enumerate() {
+        if row_i >= rows.len() {
             break;
         }
-        render_meter_row(f, rows[i], &labels[i], window);
+        render_meter_row(f, rows[row_i], label, window);
+    }
+
+    if show_more_indicator {
+        let idx = visible.len();
+        if idx < rows.len() {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" ▸ {} more (press [e] to expand)", total_hidden),
+                    Style::default().fg(Color::DarkGray),
+                ))),
+                rows[idx],
+            );
+        }
     }
 
     if let (Some(note), Some(row)) = (footer_note, rows.get(meter_rows as usize)) {

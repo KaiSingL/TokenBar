@@ -83,6 +83,14 @@ async fn run_loop(
                             KeyCode::Char('r') | KeyCode::Char('R') => {
                                 event_tx.send(AppEvent::Refresh).await?;
                             }
+                            KeyCode::Char('e') | KeyCode::Char('E') => {
+                                let mut s = state.write().await;
+                                let any_expanded = s.expanded.iter().any(|&x| x);
+                                let new_val = !any_expanded;
+                                for v in s.expanded.iter_mut() {
+                                    *v = new_val;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -187,9 +195,10 @@ fn render_body(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
                 message: "unknown state".into(),
                 failed_at: Utc::now(),
             });
-        constraints.push(Constraint::Length(card_height(&status)));
+        let expanded = app_state.expanded.get(i).copied().unwrap_or(false);
+        constraints.push(Constraint::Length(card_height(&status, expanded)));
         if i + 1 < count {
-            constraints.push(Constraint::Length(1)); // gap
+            constraints.push(Constraint::Length(1));
         }
     }
     constraints.push(Constraint::Min(0));
@@ -212,7 +221,8 @@ fn render_body(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
                 message: "unknown state".into(),
                 failed_at: Utc::now(),
             });
-        render_account_card(f, chunks[chunk_idx], account, &status);
+        let expanded = app_state.expanded.get(i).copied().unwrap_or(false);
+        render_account_card(f, chunks[chunk_idx], account, &status, expanded);
         chunk_idx += 1;
         if i + 1 < count {
             chunk_idx += 1; // skip gap
@@ -229,6 +239,14 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" refresh", Style::default().fg(Color::DarkGray)),
+        Span::raw("   "),
+        Span::styled(
+            "[e]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" expand", Style::default().fg(Color::DarkGray)),
         Span::raw("   "),
         Span::styled(
             "[q]",

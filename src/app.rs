@@ -24,6 +24,7 @@ pub struct AppState {
     pub last_refresh: Option<DateTime<Utc>>,
     pub is_refreshing: bool,
     pub tick_count: u64,
+    pub expanded: Vec<bool>,
 }
 
 impl AppState {
@@ -36,6 +37,7 @@ impl AppState {
             last_refresh: None,
             is_refreshing: false,
             tick_count: 0,
+            expanded: vec![false; count],
         }
     }
 }

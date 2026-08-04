@@ -22,13 +22,14 @@ use crate::model::{Account, AccountStatus, UsageSnapshot, UsageWindow};
 use crate::tui::widgets::format_reset;
 
 const INDEX_HTML: &str = include_str!("static/index.html");
+const APP_JS: &str = include_str!("static/app.js");
 const ICON_SVG: &[u8] = include_bytes!("static/icon.svg");
 const FAVICON_PNG: &[u8] = include_bytes!("static/favicon.png");
 const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 
 /// Bump when static icons change (sha256 prefix of icon.svg|favicon.png|favicon.svg).
 /// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
-const ASSET_V: &str = "96e089cec1";
+const ASSET_V: &str = "b3f2a7c904";
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
@@ -57,6 +58,7 @@ fn index_html() -> String {
             "/apple-touch-icon.png\"",
             &format!("/apple-touch-icon.png?v={ASSET_V}\""),
         )
+        .replace("/app.js\"", &format!("/app.js?v={ASSET_V}\""))
 }
 
 #[derive(Clone)]
@@ -125,6 +127,10 @@ pub async fn run_server(
         .route(
             "/apple-touch-icon.png",
             get(|| async { static_bytes(FAVICON_PNG, "image/png") }),
+        )
+        .route(
+            "/app.js",
+            get(|| async { static_bytes(APP_JS.as_bytes(), "application/javascript; charset=utf-8") }),
         )
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
