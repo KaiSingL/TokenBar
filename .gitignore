@@ -8,6 +8,7 @@ Thumbs.db
 .env
 *.toml.bak
 .opencode/
+.hermes/
 
 # Local / private machine deploy (LaunchAgent paths, hostnames, logs)
 /deploy/
