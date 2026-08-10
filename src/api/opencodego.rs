@@ -557,9 +557,9 @@ fn parse_window(
     }
 
     let mut percent = percent?;
-    if percent <= 1.0 && percent >= 0.0 {
-        percent *= 100.0;
-    }
+    // opencode.ai reports usagePercent already on a 0-100 scale (1 = 1%).
+    // Do NOT apply a fraction->percent heuristic: a raw value of 1.0 means
+    // 1% used, not 100%.
     percent = percent.clamp(0.0, 100.0);
 
     let reset_keys = [
@@ -642,12 +642,8 @@ fn date_from_value(val: Option<&Value>) -> Option<i64> {
 }
 
 fn normalize_percent(val: f64) -> f64 {
-    let v = if val <= 1.0 && val >= 0.0 {
-        val * 100.0
-    } else {
-        val
-    };
-    v.clamp(0.0, 100.0)
+    // opencode.ai reports usagePercent already on a 0-100 scale (1 = 1%).
+    val.clamp(0.0, 100.0)
 }
 
 fn extract_double(pattern: &str, text: &str) -> Option<f64> {
@@ -687,8 +683,11 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_percent_fraction() {
-        assert!((normalize_percent(0.43) - 43.0).abs() < 0.001);
+    fn test_normalize_percent_low_usage_stays_percent() {
+        // Regression: opencode.ai usagePercent is already 0-100 scale.
+        // A raw value of 1.0 means 1% used, NOT 100%.
+        assert!((normalize_percent(1.0) - 1.0).abs() < 0.001);
+        assert!((normalize_percent(0.5) - 0.5).abs() < 0.001);
     }
 
     #[test]
@@ -754,6 +753,24 @@ mod tests {
         let (p, r) = parse_window(&dict, now).unwrap();
         assert!((p - 43.0).abs() < 0.001);
         assert_eq!(r, 3600);
+    }
+
+    #[test]
+    fn test_parse_window_low_percent() {
+        // Regression: usagePercent of 1 (1% used) must NOT become 100%.
+        let mut dict = serde_json::Map::new();
+        dict.insert(
+            "usagePercent".to_string(),
+            Value::Number(serde_json::Number::from_f64(1.0).unwrap()),
+        );
+        dict.insert(
+            "resetInSec".to_string(),
+            Value::Number(serde_json::Number::from(9200)),
+        );
+        let now = Utc::now();
+        let (p, r) = parse_window(&dict, now).unwrap();
+        assert!((p - 1.0).abs() < 0.001);
+        assert_eq!(r, 9200);
     }
 
     #[test]
