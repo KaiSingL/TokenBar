@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 mod api;
 mod app;
+mod check;
 mod config;
 mod error;
 mod login;
@@ -46,6 +47,8 @@ enum Commands {
         #[arg(long, short = 'p', default_value_t = 8790)]
         port: u16,
     },
+    /// Validate auth.toml (and sessions.json) without starting the server
+    Check,
     /// Manage session cookies
     Session {
         #[command(subcommand)]
@@ -118,6 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             init_console_tracing(env_filter);
             print_status(&config_path, &data_dir)?;
             Ok(())
+        }
+        Some(Commands::Check) => {
+            init_console_tracing(env_filter);
+            match check::run_check(&config_path, &data_dir) {
+                Ok(()) => Ok(()),
+                Err(_) => std::process::exit(1),
+            }
         }
         Some(Commands::Serve { bind, port }) => {
             init_file_tracing(&data_dir, env_filter)?;
