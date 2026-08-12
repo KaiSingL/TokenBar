@@ -14,8 +14,7 @@ pub const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 pub const USERINFO_URL: &str = "https://auth.x.ai/oauth2/userinfo";
 /// Public Grok CLI OIDC client id.
 pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-pub const DEFAULT_SCOPES: &str =
-    "openid profile email offline_access api:access grok-cli:access";
+pub const DEFAULT_SCOPES: &str = "openid profile email offline_access api:access grok-cli:access";
 
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const GRANT_REFRESH_TOKEN: &str = "refresh_token";
@@ -296,9 +295,8 @@ pub async fn refresh_access_token(
     let status = resp.status();
     let text = resp.text().await.map_err(AppError::Network)?;
 
-    let tok: TokenResponse = serde_json::from_str(&text).map_err(|e| {
-        AppError::Parse(format!("Grok refresh token JSON: {e}"))
-    })?;
+    let tok: TokenResponse = serde_json::from_str(&text)
+        .map_err(|e| AppError::Parse(format!("Grok refresh token JSON: {e}")))?;
 
     if let Some(err) = tok.error.as_deref() {
         debug!("grok refresh error={err}");
@@ -352,18 +350,15 @@ fn fetch_userinfo(
         .send()
         .map_err(|e| AppError::Login(format!("userinfo failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(AppError::Login(format!(
-            "userinfo HTTP {}",
-            resp.status()
-        )));
+        return Err(AppError::Login(format!("userinfo HTTP {}", resp.status())));
     }
     resp.json()
         .map_err(|e| AppError::Login(format!("userinfo JSON: {e}")))
 }
 
 fn parse_id_token_claims(id_token: &str) -> Option<(Option<String>, Option<String>)> {
-    use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
 
     let mut parts = id_token.split('.');
     let _header = parts.next()?;

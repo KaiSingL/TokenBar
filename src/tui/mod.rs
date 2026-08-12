@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use chrono::{Local, Utc};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -12,7 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 
 use crate::app::{AppEvent, AppState};
@@ -123,10 +123,7 @@ fn render_layout(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
 
 fn render_header(f: &mut ratatui::Frame, area: Rect, app_state: &AppState) {
     let last_refresh = match app_state.last_refresh {
-        Some(t) => format!(
-            "last {}",
-            t.with_timezone(&Local).format("%H:%M:%S")
-        ),
+        Some(t) => format!("last {}", t.with_timezone(&Local).format("%H:%M:%S")),
         None => "not yet refreshed".into(),
     };
     let interval = app_state.config.refresh_interval_secs;
@@ -250,9 +247,7 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect) {
         Span::raw("   "),
         Span::styled(
             "[q]",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" quit", Style::default().fg(Color::DarkGray)),
     ]);

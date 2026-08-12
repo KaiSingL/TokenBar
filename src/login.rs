@@ -50,9 +50,7 @@ pub fn run_login_flow(
 ) -> Result<(), AppError> {
     match provider {
         ProviderKind::Zai => run_zai_login(account_name, api_key, config_path),
-        ProviderKind::OpenCodeGo => {
-            run_opencode_login(account_name, force, data_dir, config_path)
-        }
+        ProviderKind::OpenCodeGo => run_opencode_login(account_name, force, data_dir, config_path),
         ProviderKind::Grok => run_grok_login(account_name, force, data_dir, config_path),
     }
 }
@@ -208,10 +206,7 @@ fn open_device_oauth_webview(
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let builder = {
         use wry::WebViewBuilderExtDarwin;
-        builder.with_data_store_identifier(login_data_store_id(
-            account_name,
-            WebLoginKind::Grok,
-        ))
+        builder.with_data_store_identifier(login_data_store_id(account_name, WebLoginKind::Grok))
     };
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let _ = account_name;
@@ -238,11 +233,7 @@ fn open_device_oauth_webview(
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        if result_for_loop
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
-        {
+        if result_for_loop.lock().map(|g| g.is_some()).unwrap_or(false) {
             *control_flow = ControlFlow::Exit;
             return;
         }
@@ -259,9 +250,8 @@ fn open_device_oauth_webview(
                 match tok_rx.try_recv() {
                     Ok(Ok(tokens)) => {
                         info!("Device OAuth tokens received");
-                        let _ = webview.evaluate_script(
-                            r#"document.title = "TokenBar — Login successful";"#,
-                        );
+                        let _ = webview
+                            .evaluate_script(r#"document.title = "TokenBar — Login successful";"#);
                         if let Ok(mut slot) = result_for_loop.lock() {
                             *slot = Some(Ok(tokens));
                         }
@@ -323,9 +313,7 @@ fn run_zai_login(
                 .filter(|k| !k.is_empty())
         })
         .ok_or_else(|| {
-            AppError::Login(
-                "z.ai requires an API key. Pass --api-key or set Z_AI_API_KEY.".into(),
-            )
+            AppError::Login("z.ai requires an API key. Pass --api-key or set Z_AI_API_KEY.".into())
         })?;
 
     let created = config::upsert_zai_account(config_path, account_name, &key)?;
@@ -514,10 +502,7 @@ fn open_login_webview(
     let builder = {
         use wry::WebViewBuilderExtDarwin;
         let store_id = login_data_store_id(account_name, kind);
-        debug!(
-            "macOS login data_store_identifier={:02x?}",
-            store_id
-        );
+        debug!("macOS login data_store_identifier={:02x?}", store_id);
         builder.with_data_store_identifier(store_id)
     };
 
@@ -555,11 +540,7 @@ fn open_login_webview(
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        if result_for_loop
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
-        {
+        if result_for_loop.lock().map(|g| g.is_some()).unwrap_or(false) {
             *control_flow = ControlFlow::Exit;
             return;
         }
@@ -676,7 +657,9 @@ fn try_capture_session(
         WebLoginKind::OpenCode => {
             evaluate_opencode_capture(current_url, webview_url.as_deref(), &cookie_pairs)
         }
-        WebLoginKind::Grok => evaluate_grok_capture(current_url, webview_url.as_deref(), &cookie_pairs),
+        WebLoginKind::Grok => {
+            evaluate_grok_capture(current_url, webview_url.as_deref(), &cookie_pairs)
+        }
     };
 
     if result.is_none() {
@@ -706,8 +689,8 @@ fn evaluate_opencode_capture(
         return None;
     }
 
-    let workspace_id = extract_workspace_id(current_url)
-        .or_else(|| webview_url.and_then(extract_workspace_id))?;
+    let workspace_id =
+        extract_workspace_id(current_url).or_else(|| webview_url.and_then(extract_workspace_id))?;
 
     let auth_value = find_auth_cookie_value(cookies)?;
     if !is_valid_auth_cookie_value(auth_value) {
@@ -734,8 +717,8 @@ fn evaluate_grok_capture(
     if looks_like_login_intermediate(current_url) {
         return None;
     }
-    let on_grok = current_url.contains("grok.com")
-        || webview_url.is_some_and(|u| u.contains("grok.com"));
+    let on_grok =
+        current_url.contains("grok.com") || webview_url.is_some_and(|u| u.contains("grok.com"));
     if !on_grok {
         return None;
     }
@@ -877,18 +860,14 @@ mod tests {
     #[test]
     fn reject_oauth_intermediates() {
         let c = cookies_with_auth(&long_auth());
-        assert!(evaluate_opencode_capture(
-            "https://accounts.google.com/o/oauth2/auth",
-            None,
-            &c
-        )
-        .is_none());
-        assert!(evaluate_opencode_capture(
-            "https://github.com/login/oauth/authorize",
-            None,
-            &c
-        )
-        .is_none());
+        assert!(
+            evaluate_opencode_capture("https://accounts.google.com/o/oauth2/auth", None, &c)
+                .is_none()
+        );
+        assert!(
+            evaluate_opencode_capture("https://github.com/login/oauth/authorize", None, &c)
+                .is_none()
+        );
     }
 
     #[test]
@@ -902,18 +881,8 @@ mod tests {
     fn reject_short_or_missing_auth_cookie() {
         let url = "https://opencode.ai/workspace/wrk_01ABC123XYZ/go";
         assert!(evaluate_opencode_capture(url, None, &[]).is_none());
-        assert!(evaluate_opencode_capture(
-            url,
-            None,
-            &[("auth".into(), "short".into())]
-        )
-        .is_none());
-        assert!(evaluate_opencode_capture(
-            url,
-            None,
-            &[("session".into(), long_auth())]
-        )
-        .is_none());
+        assert!(evaluate_opencode_capture(url, None, &[("auth".into(), "short".into())]).is_none());
+        assert!(evaluate_opencode_capture(url, None, &[("session".into(), long_auth())]).is_none());
     }
 
     #[test]
@@ -922,10 +891,7 @@ mod tests {
         let c = cookies_with_auth(&auth);
         let url = "https://opencode.ai/workspace/wrk_01KE4QRVQMJPHQVJTNJZFJ76G7/go";
         let captured = evaluate_opencode_capture(url, None, &c).expect("should capture");
-        assert_eq!(
-            captured.workspace_id,
-            "wrk_01KE4QRVQMJPHQVJTNJZFJ76G7"
-        );
+        assert_eq!(captured.workspace_id, "wrk_01KE4QRVQMJPHQVJTNJZFJ76G7");
         assert!(captured.cookie.contains("auth=Fe26.2**"));
     }
 
@@ -986,16 +952,8 @@ mod tests {
 
     #[test]
     fn grok_capture_requires_sso_on_grok_com() {
-        let cookies = vec![
-            ("sso".into(), "abc".into()),
-            ("other".into(), "x".into()),
-        ];
-        assert!(evaluate_grok_capture(
-            "https://accounts.x.ai/sign-in",
-            None,
-            &cookies
-        )
-        .is_none());
+        let cookies = vec![("sso".into(), "abc".into()), ("other".into(), "x".into())];
+        assert!(evaluate_grok_capture("https://accounts.x.ai/sign-in", None, &cookies).is_none());
         assert!(evaluate_grok_capture("https://grok.com/", None, &[]).is_none());
         let captured =
             evaluate_grok_capture("https://grok.com/?_s=usage", None, &cookies).expect("ok");
@@ -1006,8 +964,7 @@ mod tests {
     #[test]
     fn grok_capture_accepts_sso_rw() {
         let cookies = vec![("sso-rw".into(), "tok".into())];
-        let captured =
-            evaluate_grok_capture("https://grok.com/chat", None, &cookies).expect("ok");
+        let captured = evaluate_grok_capture("https://grok.com/chat", None, &cookies).expect("ok");
         assert!(captured.cookie.contains("sso-rw=tok"));
     }
 }

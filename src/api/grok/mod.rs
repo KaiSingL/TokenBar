@@ -115,8 +115,7 @@ impl GrokProvider {
             .filter(|t| !t.is_empty())
             .ok_or(AppError::InvalidCredentials)?;
 
-        let tokens =
-            oauth::refresh_access_token(&self.client, refresh, self.timeout).await?;
+        let tokens = oauth::refresh_access_token(&self.client, refresh, self.timeout).await?;
 
         session.access_token = Some(tokens.access_token);
         if let Some(rt) = tokens.refresh_token {
@@ -126,10 +125,7 @@ impl GrokProvider {
             session.expires_at = tokens.expires_at;
         }
         session.updated_at = Utc::now();
-        debug!(
-            "grok token refreshed expires_at={:?}",
-            session.expires_at
-        );
+        debug!("grok token refreshed expires_at={:?}", session.expires_at);
         Ok(())
     }
 }

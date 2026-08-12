@@ -14,8 +14,7 @@ const BASE_URL: &str = "https://opencode.ai";
 const SERVER_URL: &str = "https://opencode.ai/_server";
 const WORKSPACES_SERVER_ID: &str =
     "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f";
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
 pub struct OpenCodeGoProvider {
@@ -90,11 +89,7 @@ impl OpenCodeGoProvider {
         Ok(ids.swap_remove(0))
     }
 
-    async fn fetch_usage_page(
-        &self,
-        workspace_id: &str,
-        cookie: &str,
-    ) -> Result<String, AppError> {
+    async fn fetch_usage_page(&self, workspace_id: &str, cookie: &str) -> Result<String, AppError> {
         let url = format!("{BASE_URL}/workspace/{workspace_id}/go");
         let text = fetch_page_text(&self.client, &url, cookie, self.timeout).await?;
 
@@ -137,7 +132,10 @@ impl OpenCodeGoProvider {
                 .header("User-Agent", USER_AGENT)
                 .header("Origin", BASE_URL)
                 .header("Referer", referer)
-                .header("Accept", "text/javascript, application/json;q=0.9, */*;q=0.8")
+                .header(
+                    "Accept",
+                    "text/javascript, application/json;q=0.9, */*;q=0.8",
+                )
                 .header("Content-Type", "application/json")
                 .timeout(self.timeout);
             if let Some(body) = args {
@@ -153,7 +151,10 @@ impl OpenCodeGoProvider {
                 .header("User-Agent", USER_AGENT)
                 .header("Origin", BASE_URL)
                 .header("Referer", referer)
-                .header("Accept", "text/javascript, application/json;q=0.9, */*;q=0.8")
+                .header(
+                    "Accept",
+                    "text/javascript, application/json;q=0.9, */*;q=0.8",
+                )
                 .timeout(self.timeout)
         };
 
@@ -188,7 +189,10 @@ async fn fetch_page_text(
         .get(url)
         .header("Cookie", cookie)
         .header("User-Agent", USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .timeout(timeout)
         .send()
         .await?;
@@ -322,29 +326,20 @@ fn parse_subscription(
         text,
     )
     .ok_or_else(|| AppError::Parse("Missing usage fields.".into()))?;
-    let rolling_reset = extract_int(
-        r#"rollingUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#,
-        text,
-    )
-    .ok_or_else(|| AppError::Parse("Missing usage fields.".into()))?;
+    let rolling_reset = extract_int(r#"rollingUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#, text)
+        .ok_or_else(|| AppError::Parse("Missing usage fields.".into()))?;
 
     let weekly_percent = extract_double(
         r#"weeklyUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
         text,
     );
-    let weekly_reset = extract_int(
-        r#"weeklyUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#,
-        text,
-    );
+    let weekly_reset = extract_int(r#"weeklyUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#, text);
 
     let monthly_percent = extract_double(
         r#"monthlyUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
         text,
     );
-    let monthly_reset = extract_int(
-        r#"monthlyUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#,
-        text,
-    );
+    let monthly_reset = extract_int(r#"monthlyUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#, text);
 
     let weekly = if weekly_percent.is_some() && weekly_reset.is_some() {
         Some(UsageWindow::new(
@@ -366,10 +361,7 @@ fn parse_subscription(
 
     Ok(UsageSnapshot {
         account_name: account_name.to_string(),
-        rolling: UsageWindow::new(
-            normalize_percent(rolling_percent),
-            rolling_reset as u64,
-        ),
+        rolling: UsageWindow::new(normalize_percent(rolling_percent), rolling_reset as u64),
         weekly,
         monthly,
         updated_at: now,
@@ -392,8 +384,7 @@ fn parse_subscription_json(
 
     for key in &["data", "result", "usage", "billing", "payload"] {
         if let Some(nested) = obj.get(*key).and_then(|v| v.as_object()) {
-            if let Some(snapshot) =
-                parse_usage_dict(nested, account_name, workspace_id, now, None)
+            if let Some(snapshot) = parse_usage_dict(nested, account_name, workspace_id, now, None)
             {
                 return Some(snapshot);
             }
@@ -419,13 +410,25 @@ fn parse_usage_dict(
     }
 
     let rolling_keys = [
-        "rollingUsage", "rolling", "rolling_usage", "rollingWindow", "rolling_window",
+        "rollingUsage",
+        "rolling",
+        "rolling_usage",
+        "rollingWindow",
+        "rolling_window",
     ];
     let weekly_keys = [
-        "weeklyUsage", "weekly", "weekly_usage", "weeklyWindow", "weekly_window",
+        "weeklyUsage",
+        "weekly",
+        "weekly_usage",
+        "weeklyWindow",
+        "weekly_window",
     ];
     let monthly_keys = [
-        "monthlyUsage", "monthly", "monthly_usage", "monthlyWindow", "monthly_window",
+        "monthlyUsage",
+        "monthly",
+        "monthly_usage",
+        "monthlyWindow",
+        "monthly_window",
     ];
 
     let rolling = first_dict(dict, &rolling_keys)?;
@@ -477,7 +480,11 @@ fn parse_usage_nested(
     for (key, value) in dict {
         let sub = value.as_object()?;
         let lower = key.to_lowercase();
-        if lower.contains("rolling") || lower.contains("hour") || lower.contains("5h") || lower.contains("5-hour") {
+        if lower.contains("rolling")
+            || lower.contains("hour")
+            || lower.contains("5h")
+            || lower.contains("5-hour")
+        {
             rolling = Some(sub);
         } else if lower.contains("weekly") || lower.contains("week") {
             weekly = Some(sub);
@@ -487,14 +494,24 @@ fn parse_usage_nested(
     }
 
     if let Some(rolling) = rolling {
-        if let Some(snapshot) = build_snapshot(rolling, weekly, monthly, account_name, workspace_id, now, renews_at) {
+        if let Some(snapshot) = build_snapshot(
+            rolling,
+            weekly,
+            monthly,
+            account_name,
+            workspace_id,
+            now,
+            renews_at,
+        ) {
             return Some(snapshot);
         }
     }
 
     for value in dict.values() {
         if let Some(sub) = value.as_object() {
-            if let Some(snapshot) = parse_usage_nested(sub, account_name, workspace_id, now, depth + 1, renews_at) {
+            if let Some(snapshot) =
+                parse_usage_nested(sub, account_name, workspace_id, now, depth + 1, renews_at)
+            {
                 return Some(snapshot);
             }
         }
@@ -526,14 +543,18 @@ fn build_snapshot(
     })
 }
 
-fn parse_window(
-    dict: &serde_json::Map<String, Value>,
-    now: DateTime<Utc>,
-) -> Option<(f64, i64)> {
+fn parse_window(dict: &serde_json::Map<String, Value>, now: DateTime<Utc>) -> Option<(f64, i64)> {
     let percent_keys = [
-        "usagePercent", "usedPercent", "percentUsed", "percent",
-        "usage_percent", "used_percent", "utilization", "utilizationPercent",
-        "utilization_percent", "usage",
+        "usagePercent",
+        "usedPercent",
+        "percentUsed",
+        "percent",
+        "usage_percent",
+        "used_percent",
+        "utilization",
+        "utilizationPercent",
+        "utilization_percent",
+        "usage",
     ];
 
     let mut percent: Option<f64> = None;
@@ -547,8 +568,12 @@ fn parse_window(
     if percent.is_none() {
         let used_keys = ["used", "usage", "consumed", "count", "usedTokens"];
         let limit_keys = ["limit", "total", "quota", "max", "cap", "tokenLimit"];
-        let used = used_keys.iter().find_map(|k| double_from_value(dict.get(*k)));
-        let limit = limit_keys.iter().find_map(|k| double_from_value(dict.get(*k)));
+        let used = used_keys
+            .iter()
+            .find_map(|k| double_from_value(dict.get(*k)));
+        let limit = limit_keys
+            .iter()
+            .find_map(|k| double_from_value(dict.get(*k)));
         if let (Some(u), Some(l)) = (used, limit) {
             if l > 0.0 {
                 percent = Some((u / l) * 100.0);
@@ -563,8 +588,15 @@ fn parse_window(
     percent = percent.clamp(0.0, 100.0);
 
     let reset_keys = [
-        "resetInSec", "resetInSeconds", "resetSeconds", "reset_sec",
-        "reset_in_sec", "resetsInSec", "resetsInSeconds", "resetIn", "resetSec",
+        "resetInSec",
+        "resetInSeconds",
+        "resetSeconds",
+        "reset_sec",
+        "reset_in_sec",
+        "resetsInSec",
+        "resetsInSeconds",
+        "resetIn",
+        "resetSec",
     ];
 
     let mut reset_in_sec: Option<i64> = None;
@@ -577,8 +609,14 @@ fn parse_window(
 
     if reset_in_sec.is_none() {
         let reset_at_keys = [
-            "resetAt", "resetsAt", "reset_at", "resets_at",
-            "nextReset", "next_reset", "renewAt", "renew_at",
+            "resetAt",
+            "resetsAt",
+            "reset_at",
+            "resets_at",
+            "nextReset",
+            "next_reset",
+            "renewAt",
+            "renew_at",
         ];
         for key in &reset_at_keys {
             if let Some(dt) = date_from_value(dict.get(*key)) {
@@ -629,7 +667,8 @@ fn date_from_value(val: Option<&Value>) -> Option<i64> {
             let trimmed = s.trim();
             if let Ok(n) = trimmed.parse::<f64>() {
                 return date_from_value(Some(&Value::Number(
-                    serde_json::Number::from_f64(n).unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap()),
+                    serde_json::Number::from_f64(n)
+                        .unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap()),
                 )));
             }
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
@@ -706,7 +745,10 @@ mod tests {
     #[test]
     fn test_extract_double_simple() {
         let text = r#"rollingUsage: { usagePercent: 43.5 }"#;
-        let val = extract_double(r#"rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#, text);
+        let val = extract_double(
+            r#"rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
+            text,
+        );
         assert!((val.unwrap() - 43.5).abs() < 0.001);
     }
 

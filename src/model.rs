@@ -141,11 +141,7 @@ impl UsageWindow {
         }
     }
 
-    pub fn with_label(
-        usage_percent: f64,
-        reset_in_sec: u64,
-        label: impl Into<String>,
-    ) -> Self {
+    pub fn with_label(usage_percent: f64, reset_in_sec: u64, label: impl Into<String>) -> Self {
         Self {
             usage_percent,
             reset_in_sec,

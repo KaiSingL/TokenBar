@@ -81,8 +81,7 @@ pub fn parse_auth_json(data: &[u8]) -> Result<GrokCredentials, AppError> {
 
     let (scope, entry) = select_preferred_entry(obj).ok_or_else(|| {
         AppError::Login(
-            "Grok auth.json exists but contains no usable access tokens. Run `grok login`."
-                .into(),
+            "Grok auth.json exists but contains no usable access tokens. Run `grok login`.".into(),
         )
     })?;
 
@@ -91,9 +90,7 @@ pub fn parse_auth_json(data: &[u8]) -> Result<GrokCredentials, AppError> {
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            AppError::Login("Grok auth.json entry missing non-empty `key`.".into())
-        })?;
+        .ok_or_else(|| AppError::Login("Grok auth.json entry missing non-empty `key`.".into()))?;
 
     Ok(GrokCredentials {
         access_token: key.to_string(),

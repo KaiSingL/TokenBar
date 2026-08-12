@@ -37,8 +37,7 @@ pub fn load_sessions(path: &Path) -> Result<Sessions, AppError> {
 
 pub fn save_sessions(path: &Path, sessions: &Sessions) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::Io(e))?;
+        std::fs::create_dir_all(parent).map_err(|e| AppError::Io(e))?;
     }
     let contents = serde_json::to_string_pretty(sessions)
         .map_err(|e| AppError::Config(format!("Failed to serialize sessions: {e}")))?;

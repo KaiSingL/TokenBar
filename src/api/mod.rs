@@ -24,11 +24,7 @@ pub async fn fetch_for_account(
         ProviderKind::OpenCodeGo => {
             let entry = session.ok_or(AppError::InvalidCredentials)?;
             let snapshot = opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
-                .fetch_usage(
-                    &account.name,
-                    &entry.cookie,
-                    entry.workspace_id.as_deref(),
-                )
+                .fetch_usage(&account.name, &entry.cookie, entry.workspace_id.as_deref())
                 .await?;
             Ok(FetchResult {
                 snapshot,
@@ -57,7 +53,9 @@ pub async fn fetch_for_account(
 
 pub fn has_credentials(account: &Account, session: Option<&SessionEntry>) -> bool {
     match account.provider {
-        ProviderKind::OpenCodeGo => session.map(|s| !s.cookie.trim().is_empty()).unwrap_or(false),
+        ProviderKind::OpenCodeGo => session
+            .map(|s| !s.cookie.trim().is_empty())
+            .unwrap_or(false),
         ProviderKind::Zai => resolve_zai_api_key(account).is_some(),
         ProviderKind::Grok => session.map(|s| s.has_grok_session()).unwrap_or(false),
     }

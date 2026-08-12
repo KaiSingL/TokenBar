@@ -60,11 +60,7 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<(), AppError> {
 
 /// Ensure `name` exists in auth.toml with the given provider.
 /// Returns `true` if a new account was added.
-pub fn ensure_account(
-    path: &Path,
-    name: &str,
-    provider: ProviderKind,
-) -> Result<bool, AppError> {
+pub fn ensure_account(path: &Path, name: &str, provider: ProviderKind) -> Result<bool, AppError> {
     let mut config = load_config_or_default(path)?;
     if config.accounts.iter().any(|a| a.name == name) {
         return Ok(false);
@@ -80,11 +76,7 @@ pub fn ensure_account(
 
 /// Upsert a ZAI account with api_key into auth.toml.
 /// Returns whether the account was newly created.
-pub fn upsert_zai_account(
-    path: &Path,
-    name: &str,
-    api_key: &str,
-) -> Result<bool, AppError> {
+pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool, AppError> {
     let mut config = load_config_or_default(path)?;
     let key = api_key.trim().to_string();
     if key.is_empty() {

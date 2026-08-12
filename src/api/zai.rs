@@ -119,8 +119,8 @@ enum LimitUnit {
 }
 
 fn parse_quota_response(body: &str, account_name: &str) -> Result<UsageSnapshot, AppError> {
-    let resp: QuotaResponse = serde_json::from_str(body)
-        .map_err(|e| AppError::Parse(format!("z.ai JSON: {e}")))?;
+    let resp: QuotaResponse =
+        serde_json::from_str(body).map_err(|e| AppError::Parse(format!("z.ai JSON: {e}")))?;
 
     if !(resp.success && resp.code == 200) {
         let msg = resp
@@ -200,9 +200,8 @@ fn parse_quota_response(body: &str, account_name: &str) -> Result<UsageSnapshot,
     };
 
     // Secondary meter is always labeled Weekly (never monthly for ZAI).
-    let weekly = weekly_src.map(|e| {
-        UsageWindow::with_label(e.usage_percent, e.reset_in_sec, "Weekly")
-    });
+    let weekly =
+        weekly_src.map(|e| UsageWindow::with_label(e.usage_percent, e.reset_in_sec, "Weekly"));
 
     Ok(UsageSnapshot {
         account_name: account_name.to_string(),
@@ -410,7 +409,10 @@ mod tests {
     fn parse_rejects_error_code() {
         let body = r#"{"code":401,"success":false,"msg":"unauthorized","data":null}"#;
         let err = parse_quota_response(body, "a").unwrap_err();
-        assert!(matches!(err, AppError::InvalidCredentials | AppError::Api(_)));
+        assert!(matches!(
+            err,
+            AppError::InvalidCredentials | AppError::Api(_)
+        ));
     }
 
     #[test]
