@@ -86,7 +86,7 @@ function render(data, fetchedAt) {
   snapshot = { fetchedAt: fetchedAt || Date.now(), accounts };
 
   if (!accounts.length) {
-    cardsEl.innerHTML = `<div class="empty">No accounts configured.<br/>Add accounts with <code>tokenbar login</code>.</div>`;
+    cardsEl.innerHTML = `<div class="empty">No accounts configured.<br/>Add accounts with <code>tokenbar account login</code>.</div>`;
     return;
   }
 

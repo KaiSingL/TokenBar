@@ -70,13 +70,13 @@ automatically. Ensure that directory is on your `PATH`.
 
 ```shell
 # Log in to an OpenCode Go account (opens a browser window)
-tokenbar login personal
+tokenbar account login personal
 
 # Log in to a ZAI account
-tokenbar login work --provider zai --api-key sk-abc123...
+tokenbar account login work --provider zai --api-key sk-abc123...
 
 # Log in to a Grok account (opens browser)
-tokenbar login grokme --provider grok
+tokenbar account login grokme --provider grok
 
 # Terminal dashboard
 tokenbar
@@ -138,14 +138,14 @@ required for normal use.
 |---|---|
 | `tokenbar` | Launch the TUI dashboard |
 | `tokenbar serve` | Web dashboard on `127.0.0.1:8790` |
-| `tokenbar status` | Print account status (session age, workspace IDs) |
-| `tokenbar login <name>` | Log in to an OpenCode Go account (opens webview) |
-| `tokenbar login <name> --provider zai --api-key <key>` | Save a ZAI API key |
-| `tokenbar login <name> --provider grok` | Log in to Grok (opens webview) |
-| `tokenbar session set <name> --cookie <str>` | Manually set a session cookie |
-| `tokenbar session rm <name>` | Remove a session |
-| `tokenbar session status` | List saved sessions |
-| `tokenbar session export` | Print sessions as JSON |
+| `tokenbar account list` | Print account status (session age, workspace IDs) |
+| `tokenbar account login <name>` | Log in to an OpenCode Go account (opens webview) |
+| `tokenbar account login <name> --provider zai --api-key <key>` | Save a ZAI API key |
+| `tokenbar account login <name> --provider grok` | Log in to Grok (opens webview) |
+| `tokenbar account login --cookie <name> --cookie <str>` | Manually set a session cookie |
+| `tokenbar account logout <name>` | Remove a session |
+| `tokenbar account list` | List saved sessions |
+| `tokenbar account list --details` | Print sessions as JSON |
 | `--config <path>` | Override path to `auth.toml` |
 | `--data-dir <path>` | Override data directory |
 
@@ -196,8 +196,8 @@ webview; approve access (enter the printed user code if asked). Tokens are
 stored per account in `sessions.json`.
 
 ```shell
-tokenbar login alice --provider grok
-tokenbar login bob --provider grok
+tokenbar account login alice --provider grok
+tokenbar account login bob --provider grok
 ```
 
 Usage is fetched with the access token from

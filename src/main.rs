@@ -2,10 +2,11 @@ use std::fs::OpenOptions;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
+mod account;
 mod api;
 mod app;
 mod check;
@@ -18,12 +19,18 @@ mod tui;
 mod web;
 
 #[derive(Parser)]
-#[command(name = "tokenbar", about = "TUI monitor for AI subscription plan limits")]
+#[command(
+    name = "tokenbar",
+    about = "TUI monitor for AI subscription plan limits"
+)]
 struct Cli {
     #[arg(short, long, help = "Override config file path")]
     config: Option<String>,
 
-    #[arg(long, help = "Override data directory (default: ~/.config/tokenbar or %APPDATA%/tokenbar)")]
+    #[arg(
+        long,
+        help = "Override data directory (default: ~/.config/tokenbar or %APPDATA%/tokenbar)"
+    )]
     data_dir: Option<String>,
 
     /// Enable debug logging (poll skips, API traces, etc.)
@@ -36,8 +43,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Show accounts and session status
-    Status,
     /// Serve mobile-friendly web usage dashboard (loopback by default)
     Serve {
         /// Bind address (use 127.0.0.1 for Cloudflare Tunnel private sites)
@@ -49,12 +54,23 @@ enum Commands {
     },
     /// Validate auth.toml (and sessions.json) without starting the server
     Check,
-    /// Manage session cookies
-    Session {
+    /// Manage accounts: list, login, logout, or remove
+    Account {
         #[command(subcommand)]
-        action: SessionCommands,
+        action: AccountCommands,
     },
-    /// Log in / store credentials for an account
+}
+
+#[derive(Subcommand)]
+enum AccountCommands {
+    /// Show accounts and their session state
+    List {
+        /// Include session details (email, expiry, token lengths)
+        #[arg(long)]
+        details: bool,
+    },
+    /// Add an account and obtain a session (interactive browser flow,
+    /// or inject a cookie with --cookie / --json-file-path)
     Login {
         /// Account name (added to auth.toml if missing)
         name: String,
@@ -64,36 +80,27 @@ enum Commands {
         /// z.ai API key (or set Z_AI_API_KEY). Ignored for opencode_go.
         #[arg(long)]
         api_key: Option<String>,
-        /// Overwrite existing OpenCode session cookie
+        /// Store a manually captured session cookie instead of the browser flow
+        #[arg(long)]
+        cookie: Option<String>,
+        /// Import the cookie value from a file instead of --cookie
+        #[arg(long)]
+        json_file_path: Option<String>,
+        /// Overwrite an existing session
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum SessionCommands {
-    /// Store a session cookie for an account
-    Set {
-        /// Account name (must match auth.toml)
-        name: String,
-
-        /// Session cookie value
-        #[arg(short, long)]
-        cookie: Option<String>,
-
-        /// Import cookie from a browser export file
-        #[arg(long)]
-        json_file_path: Option<String>,
-    },
-    /// Remove a session entry
-    Rm {
+    /// Drop the session for an account but keep it in auth.toml
+    Logout {
         /// Account name
         name: String,
     },
-    /// List session entries (no cookie values)
-    Status,
-    /// Show session details for all accounts
-    Export,
+    /// Remove account(s) from auth.toml and their sessions
+    Rm {
+        /// Account name(s)
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -107,21 +114,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::resolve_config_path(&data_dir)
     };
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            if cli.debug {
-                EnvFilter::new("warn,tokenbar=debug")
-            } else {
-                EnvFilter::new("info")
-            }
-        });
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if cli.debug {
+            EnvFilter::new("warn,tokenbar=debug")
+        } else {
+            EnvFilter::new("info")
+        }
+    });
 
     match cli.command {
-        Some(Commands::Status) => {
-            init_console_tracing(env_filter);
-            print_status(&config_path, &data_dir)?;
-            Ok(())
-        }
         Some(Commands::Check) => {
             init_console_tracing(env_filter);
             match check::run_check(&config_path, &data_dir) {
@@ -133,21 +134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             init_file_tracing(&data_dir, env_filter)?;
             run_serve(&config_path, &data_dir, &bind, port).await
         }
-        Some(Commands::Session { action }) => {
+        Some(Commands::Account { action }) => {
             init_console_tracing(env_filter);
-            run_session_command(action, &data_dir, &config_path)?;
-            Ok(())
-        }
-        Some(Commands::Login {
-            name,
-            provider,
-            api_key,
-            force,
-        }) => {
-            init_console_tracing(env_filter);
-            let provider = model::ProviderKind::parse_cli(&provider)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            login::run_login_flow(&name, force, provider, api_key, &data_dir, &config_path)?;
+            run_account_command(action, &config_path, &data_dir)?;
             Ok(())
         }
         None => {
@@ -204,13 +193,14 @@ fn format_age(secs: i64) -> String {
 fn print_status(
     config_path: &std::path::Path,
     data_dir: &std::path::Path,
+    details: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_config = config::load_config_or_default(config_path)?;
     let sessions = session::load_sessions(&session::resolve_sessions_path(data_dir))?;
 
     if app_config.accounts.is_empty() && sessions.sessions.is_empty() {
         println!("No accounts configured.");
-        println!("  Add one with: tokenbar login <name>");
+        println!("  Add one with: tokenbar account login <name>");
         return Ok(());
     }
 
@@ -246,7 +236,7 @@ fn print_status(
                     );
                 } else {
                     println!(
-                        "  {:<16}  {:<12}  no api key  (run: tokenbar login {} --provider zai --api-key …)",
+                        "  {:<16}  {:<12}  no api key  (run: tokenbar account login {} --provider zai --api-key …)",
                         account.name,
                         provider_label(account.provider),
                         account.name
@@ -270,7 +260,7 @@ fn print_status(
                 }
                 _ => {
                     println!(
-                        "  {:<16}  {:<12}  no session  (run: tokenbar login {})",
+                        "  {:<16}  {:<12}  no session  (run: tokenbar account login {})",
                         account.name,
                         provider_label(account.provider),
                         account.name
@@ -295,7 +285,7 @@ fn print_status(
                 }
                 _ => {
                     println!(
-                        "  {:<16}  {:<12}  no session  (run: tokenbar login {} --provider grok)",
+                        "  {:<16}  {:<12}  no session  (run: tokenbar account login {} --provider grok)",
                         account.name,
                         provider_label(account.provider),
                         account.name
@@ -318,104 +308,112 @@ fn print_status(
         }
     }
 
-    Ok(())
-}
-
-fn run_session_command(
-    cmd: SessionCommands,
-    data_dir: &std::path::Path,
-    config_path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let sessions_path = session::resolve_sessions_path(data_dir);
-    let mut sessions = session::load_sessions(&sessions_path)?;
-
-    match cmd {
-        SessionCommands::Set {
-            name,
-            cookie,
-            json_file_path,
-        } => {
-            let cookie_val = if let Some(c) = cookie {
-                c
-            } else if let Some(path) = json_file_path {
-                let contents = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("Failed to read {path}: {e}"))?;
-                contents.trim().to_string()
-            } else {
-                return Err("Either --cookie or --json-file-path is required".into());
-            };
-
-            sessions.sessions.insert(
-                name.clone(),
-                model::SessionEntry {
-                    cookie: cookie_val,
-                    workspace_id: None,
-                    access_token: None,
-                    refresh_token: None,
-                    expires_at: None,
-                    email: None,
-                    user_id: None,
-                    updated_at: chrono::Utc::now(),
-                },
+    if details {
+        println!();
+        println!("Session details:");
+        if sessions.sessions.is_empty() {
+            println!("  (none)");
+        }
+        for (name, entry) in &sessions.sessions {
+            let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+            let wid = entry
+                .workspace_id
+                .as_deref()
+                .unwrap_or("(discover on next poll)");
+            println!("  {name}:");
+            if !entry.cookie.is_empty() {
+                println!("    cookie: ({} chars)", entry.cookie.len());
+                println!("    workspace_id: {wid}");
+            }
+            if let Some(tok) = &entry.access_token {
+                println!("    access_token: ({} chars)", tok.len());
+            }
+            if let Some(email) = &entry.email {
+                println!("    email: {email}");
+            }
+            if let Some(exp) = entry.expires_at {
+                println!(
+                    "    expires_at: {}",
+                    exp.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                );
+            }
+            println!(
+                "    updated: {} ({} ago)",
+                entry
+                    .updated_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
+                format_age(age.num_seconds())
             );
-            session::save_sessions(&sessions_path, &sessions)?;
-            info!("Session stored for account '{name}'");
-            println!("Session stored for account '{name}'");
-        }
-        SessionCommands::Rm { name } => {
-            if sessions.sessions.remove(&name).is_some() {
-                session::save_sessions(&sessions_path, &sessions)?;
-                info!("Session removed for account '{name}'");
-                println!("Session removed for account '{name}'");
-            } else {
-                println!("No session found for account '{name}'");
-            }
-        }
-        SessionCommands::Status => {
-            print_status(config_path, data_dir)?;
-        }
-        SessionCommands::Export => {
-            if sessions.sessions.is_empty() {
-                println!("No sessions stored.");
-            } else {
-                println!("Session details:");
-                for (name, entry) in &sessions.sessions {
-                    let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
-                    let wid = entry
-                        .workspace_id
-                        .as_deref()
-                        .unwrap_or("(discover on next poll)");
-                    println!("  {name}:");
-                    if !entry.cookie.is_empty() {
-                        println!("    cookie: ({} chars)", entry.cookie.len());
-                        println!("    workspace_id: {wid}");
-                    }
-                    if let Some(tok) = &entry.access_token {
-                        println!("    access_token: ({} chars)", tok.len());
-                    }
-                    if let Some(email) = &entry.email {
-                        println!("    email: {email}");
-                    }
-                    if let Some(exp) = entry.expires_at {
-                        println!(
-                            "    expires_at: {}",
-                            exp.with_timezone(&chrono::Local)
-                                .format("%Y-%m-%d %H:%M:%S")
-                        );
-                    }
-                    println!(
-                        "    updated: {} ({} ago)",
-                        entry
-                            .updated_at
-                            .with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M:%S"),
-                        format_age(age.num_seconds())
-                    );
-                }
-            }
         }
     }
 
+    Ok(())
+}
+
+fn run_account_command(
+    cmd: AccountCommands,
+    config_path: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        AccountCommands::List { details } => {
+            print_status(config_path, data_dir, details)?;
+        }
+        AccountCommands::Login {
+            name,
+            provider,
+            api_key,
+            cookie,
+            json_file_path,
+            force,
+        } => {
+            let provider = model::ProviderKind::parse_cli(&provider)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let cookie_val = if let Some(c) = cookie {
+                Some(c)
+            } else if let Some(path) = json_file_path {
+                let contents =
+                    std::fs::read_to_string(&path).map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("Failed to read {path}: {e}").into()
+                    })?;
+                Some(contents.trim().to_string())
+            } else {
+                None
+            };
+            match cookie_val {
+                Some(cookie) => {
+                    if provider != model::ProviderKind::OpenCodeGo {
+                        return Err(format!(
+                            "--cookie is only supported for opencode_go accounts (got {})",
+                            provider.as_str()
+                        )
+                        .into());
+                    }
+                    account::store_session_cookie(data_dir, config_path, &name, cookie)?;
+                }
+                None => {
+                    login::run_login_flow(&name, force, provider, api_key, data_dir, config_path)?;
+                }
+            }
+        }
+        AccountCommands::Logout { name } => {
+            println!(
+                "{}",
+                account::logout_account(&session::resolve_sessions_path(data_dir), &name)?
+            );
+        }
+        AccountCommands::Rm { names } => {
+            for line in account::rm_accounts(
+                config_path,
+                &session::resolve_sessions_path(data_dir),
+                &names,
+            )? {
+                println!("{line}");
+            }
+        }
+    }
     Ok(())
 }
 

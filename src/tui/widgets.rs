@@ -68,7 +68,14 @@ fn meter_count(snapshot: &UsageSnapshot) -> u16 {
 
 fn all_meters(snapshot: &UsageSnapshot) -> Vec<(&UsageWindow, String)> {
     let mut meters = Vec::new();
-    meters.push((&snapshot.rolling, snapshot.rolling.label.clone().unwrap_or_else(|| "Rolling".into())));
+    meters.push((
+        &snapshot.rolling,
+        snapshot
+            .rolling
+            .label
+            .clone()
+            .unwrap_or_else(|| "Rolling".into()),
+    ));
     if let Some(ref w) = snapshot.weekly {
         meters.push((w, w.label.clone().unwrap_or_else(|| "Weekly".into())));
     }
@@ -125,7 +132,13 @@ fn status_badge(status: &AccountStatus) -> (String, Style) {
     }
 }
 
-pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status: &AccountStatus, expanded: bool) {
+pub fn render_account_card(
+    f: &mut Frame,
+    area: Rect,
+    account: &Account,
+    status: &AccountStatus,
+    expanded: bool,
+) {
     let (badge_text, badge_style) = status_badge(status);
     let title = Line::from(vec![
         Span::raw(" "),
@@ -138,10 +151,7 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
             Style::default().fg(Color::DarkGray),
         ),
     ]);
-    let title_right = Line::from(vec![
-        Span::styled(badge_text, badge_style),
-        Span::raw(" "),
-    ]);
+    let title_right = Line::from(vec![Span::styled(badge_text, badge_style), Span::raw(" ")]);
 
     let border_style = match status {
         AccountStatus::Error { .. } => Style::default().fg(Color::Red),
@@ -169,17 +179,17 @@ pub fn render_account_card(f: &mut Frame, area: Rect, account: &Account, status:
                 ProviderKind::Zai => (
                     "No API key".to_string(),
                     format!(
-                        "tokenbar login {} --provider zai --api-key …",
+                        "tokenbar account login {} --provider zai --api-key …",
                         account.name
                     ),
                 ),
                 ProviderKind::OpenCodeGo => (
                     "No session loaded".to_string(),
-                    format!("tokenbar login {}", account.name),
+                    format!("tokenbar account login {}", account.name),
                 ),
                 ProviderKind::Grok => (
                     "No Grok session".to_string(),
-                    format!("tokenbar login {} --provider grok", account.name),
+                    format!("tokenbar account login {} --provider grok", account.name),
                 ),
             };
             f.render_widget(
@@ -244,7 +254,13 @@ fn compact_age(secs: i64) -> String {
     format_reset(secs)
 }
 
-fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_note: Option<String>, expanded: bool) {
+fn render_meters(
+    f: &mut Frame,
+    area: Rect,
+    snapshot: &UsageSnapshot,
+    footer_note: Option<String>,
+    expanded: bool,
+) {
     let meters = all_meters(snapshot);
     let mask = hidden_mask(snapshot);
     let total_hidden = mask.iter().filter(|&&h| h).count();
@@ -297,7 +313,9 @@ fn render_meters(f: &mut Frame, area: Rect, snapshot: &UsageSnapshot, footer_not
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 note,
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::DIM),
             ))),
             *row,
         );
@@ -372,10 +390,7 @@ fn build_bar(width: usize, percent: f64, color: Color) -> Vec<Span<'static>> {
     let empty = width - filled;
     let mut spans = Vec::with_capacity(2);
     if filled > 0 {
-        spans.push(Span::styled(
-            "█".repeat(filled),
-            Style::default().fg(color),
-        ));
+        spans.push(Span::styled("█".repeat(filled), Style::default().fg(color)));
     }
     if empty > 0 {
         spans.push(Span::styled(

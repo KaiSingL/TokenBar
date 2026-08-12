@@ -159,7 +159,7 @@ pub fn collect_findings(config_path: &Path, data_dir: &Path) -> Vec<Finding> {
                     for name in names {
                         if !known.contains(name) {
                             out.push(Finding::warn(format!(
-                                "sessions.json: orphan session '{name}' — no matching account in auth.toml (remove with: tokenbar session rm {name})"
+                                "sessions.json: orphan session '{name}' — no matching account in auth.toml (remove with: tokenbar account logout {name})"
                             )));
                         }
                     }

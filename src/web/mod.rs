@@ -130,7 +130,9 @@ pub async fn run_server(
         )
         .route(
             "/app.js",
-            get(|| async { static_bytes(APP_JS.as_bytes(), "application/javascript; charset=utf-8") }),
+            get(|| async {
+                static_bytes(APP_JS.as_bytes(), "application/javascript; charset=utf-8")
+            }),
         )
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
@@ -202,7 +204,11 @@ async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
 
 async fn refresh_handler(State(state): State<WebState>) -> Response {
     match state.event_tx.try_send(AppEvent::Refresh) {
-        Ok(()) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "ok": true })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "ok": false, "error": "refresh queue full" })),
@@ -263,13 +269,19 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
 fn no_session_hint(account: &Account) -> String {
     match account.provider {
         crate::model::ProviderKind::Zai => {
-            format!("No API key — tokenbar login {} --provider zai --api-key …", account.name)
+            format!(
+                "No API key — tokenbar account login {} --provider zai --api-key …",
+                account.name
+            )
         }
         crate::model::ProviderKind::OpenCodeGo => {
-            format!("No session — tokenbar login {}", account.name)
+            format!("No session — tokenbar account login {}", account.name)
         }
         crate::model::ProviderKind::Grok => {
-            format!("No session — tokenbar login {} --provider grok", account.name)
+            format!(
+                "No session — tokenbar account login {} --provider grok",
+                account.name
+            )
         }
     }
 }
