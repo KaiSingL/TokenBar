@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- Favicon: transparent mark with ~14% padding (not edge-to-edge) -->
-  <svg x="14" y="14" width="72" height="72" viewBox="35.1 35.3 80.6 80.5" preserveAspectRatio="xMidYMid meet">
+  <!-- Favicon: gauge mark on squircle plate (iOS-style continuous corner) -->
+  <path d="M50 0C77.6 0 88.3 0 94.1 5.9C100 11.7 100 22.4 100 50C100 77.6 100 88.3 94.1 94.1C88.3 100 77.6 100 50 100C22.4 100 11.7 100 5.9 94.1C0 88.3 0 77.6 0 50C0 22.4 0 11.7 5.9 5.9C11.7 0 22.4 0 50 0Z" fill="#232630"/>
+  <svg x="17" y="17" width="66" height="66" viewBox="35.1 35.3 80.6 80.5" preserveAspectRatio="xMidYMid meet">
     <style type="text/css">
       .cls-1 { fill: #E3E4E7; }
       .cls-2 { fill: #BDC1C8; }
