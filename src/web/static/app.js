@@ -112,6 +112,7 @@ function credFormHtml(a) {
   const busy = pendingCred.has(a.name);
   const dis = busy ? " disabled" : "";
   return `<div class="cred-form" data-cred-name="${escapeHtml(a.name)}">
+    <div class="cred-hint">Create a key in opencode.ai under your workspace's API Keys page, then paste it here.</div>
     <div class="cred-input-row">
       <input class="cred-input" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="paste opencode api key" aria-label="API key for ${escapeHtml(a.name)}" inputmode="text" enterkeyhint="done"${dis} />
       <button type="button" class="cred-eye" aria-label="show key"${dis}>show</button>
@@ -121,6 +122,12 @@ function credFormHtml(a) {
       <button type="button" class="cred-cancel" data-cred-cancel="${escapeHtml(a.name)}"${dis}>cancel</button>
     </div>
   </div>`;
+}
+
+function actionLabel(status) {
+  if (status === "not_subscribed") return "open this workspace in opencode.ai";
+  if (status === "no_session") return "sign in at opencode.ai";
+  return "open in opencode.ai";
 }
 
 function findCredForm(name) {
@@ -256,6 +263,12 @@ function paintCards() {
       body = `<div class="note dim">${escapeHtml(a.error || "No OpenCode Go subscription")}</div>`;
     } else if (status === "error") {
       body = `<div class="note bad">${escapeHtml(a.error || "Error")}</div>`;
+    }
+
+    // Tappable destination for the states that have one. Only server-supplied
+    // http(s) URLs are rendered, and only as a link.
+    if (a.action_url && /^https?:\/\//.test(a.action_url)) {
+      body += `<div><a class="note-link" href="${escapeHtml(a.action_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(actionLabel(status))}</a></div>`;
     }
 
     if (status === "stale" && a.error) {

@@ -35,7 +35,7 @@ const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 /// Bump when static assets change (sha256 prefix of
 /// icon.svg|favicon.png|favicon.svg|app.js).
 /// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
-const ASSET_V: &str = "58f8c4c34e";
+const ASSET_V: &str = "61889d1dc6";
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
@@ -98,6 +98,11 @@ struct AccountDto {
     /// Non-secret credential descriptor; `masked` never holds the full value.
     #[serde(skip_serializing_if = "Option::is_none")]
     credential: Option<CredentialDto>,
+    /// Optional tappable destination for this state (workspace subscribe page,
+    /// console login). Rendered as a real link so it survives a phone viewport
+    /// without the URL being broken mid-token inside the note text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -359,6 +364,7 @@ fn account_dto(
     session: Option<&SessionEntry>,
 ) -> AccountDto {
     let credential = credential_dto(account, session);
+    let action_url = action_url_for(account, status);
     match status {
         AccountStatus::NoSession => AccountDto {
             name: account.name.clone(),
@@ -368,6 +374,7 @@ fn account_dto(
             error: Some(no_session_hint(account)),
             failed_at: None,
             credential,
+            action_url,
         },
         AccountStatus::NotSubscribed { workspace_id } => AccountDto {
             name: account.name.clone(),
@@ -377,6 +384,7 @@ fn account_dto(
             error: Some(not_subscribed_hint(workspace_id.as_deref())),
             failed_at: None,
             credential,
+            action_url,
         },
         AccountStatus::Loading => AccountDto {
             name: account.name.clone(),
@@ -386,6 +394,7 @@ fn account_dto(
             error: None,
             failed_at: None,
             credential,
+            action_url,
         },
         AccountStatus::Ready(snapshot) => AccountDto {
             name: account.name.clone(),
@@ -395,6 +404,7 @@ fn account_dto(
             error: None,
             failed_at: None,
             credential,
+            action_url,
         },
         AccountStatus::Stale {
             last,
@@ -408,6 +418,7 @@ fn account_dto(
             error: Some(error.clone()),
             failed_at: Some(*failed_at),
             credential,
+            action_url,
         },
         AccountStatus::Error { message, failed_at } => AccountDto {
             name: account.name.clone(),
@@ -417,7 +428,26 @@ fn account_dto(
             error: Some(message.clone()),
             failed_at: Some(*failed_at),
             credential,
+            action_url,
         },
+    }
+}
+
+/// A tappable destination for the states that have one: the workspace's Go page
+/// when a subscription is missing (or a no-session opencode account, where the
+/// useful next step is signing in and minting a key). Only http(s) URLs that we
+/// construct ourselves are ever emitted, so the dashboard can render them as
+/// plain links.
+fn action_url_for(account: &Account, status: &AccountStatus) -> Option<String> {
+    match (account.provider, status) {
+        (ProviderKind::OpenCodeGo, AccountStatus::NotSubscribed { workspace_id }) => workspace_id
+            .as_deref()
+            .filter(|w| w.starts_with("wrk_"))
+            .map(|w| format!("https://opencode.ai/workspace/{w}/go")),
+        (ProviderKind::OpenCodeGo, AccountStatus::NoSession) => {
+            Some("https://opencode.ai/console".to_string())
+        }
+        _ => None,
     }
 }
 
@@ -468,13 +498,10 @@ fn no_session_hint(account: &Account) -> String {
     }
 }
 
-fn not_subscribed_hint(workspace_id: Option<&str>) -> String {
-    match workspace_id {
-        Some(wid) => format!(
-            "No OpenCode Go subscription on this workspace — https://opencode.ai/workspace/{wid}/go"
-        ),
-        None => "No OpenCode Go subscription on this workspace".to_string(),
-    }
+fn not_subscribed_hint(_workspace_id: Option<&str>) -> String {
+    // The URL travels separately as `action_url` so the dashboard can render it
+    // as a tappable link instead of breaking a long id mid-token on a phone.
+    "No OpenCode Go subscription on this workspace".to_string()
 }
 
 fn meters_from_snapshot(snapshot: &UsageSnapshot) -> Vec<MeterDto> {
