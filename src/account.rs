@@ -218,12 +218,15 @@ mod tests {
     use crate::model::UsageWindow;
 
     fn temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // pid + per-process counter: wall-clock nanos collide when several tests
+        // start in the same tick, which made unrelated tests share one directory
+        // and read each other's half-written files under parallel runs.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "tokenbar-account-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "tokenbar-account-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
