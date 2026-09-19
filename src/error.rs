@@ -8,6 +8,9 @@ pub enum AppError {
     #[error("Invalid or expired credentials")]
     InvalidCredentials,
 
+    #[error("Not subscribed to OpenCode Go")]
+    NotSubscribed,
+
     #[error("Network error: {0}")]
     Network(#[from] reqwest::Error),
 

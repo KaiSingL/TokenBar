@@ -110,6 +110,10 @@
     .card.error { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
     .card.stale { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
     .card.no_session { opacity: 0.78; }
+    .card.not_subscribed {
+      opacity: 0.85;
+      border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+    }
     .card-top {
       display: flex;
       align-items: baseline;
@@ -138,6 +142,7 @@
     .badge.stale { color: var(--warn); }
     .badge.error { color: var(--bad); }
     .badge.no_session { color: var(--dim); }
+    .badge.not_subscribed { color: var(--accent); }
     .meter { margin-top: 0.65rem; }
     .meter:first-of-type { margin-top: 0; }
     .meter[data-hidden] {

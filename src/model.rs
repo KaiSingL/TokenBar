@@ -168,6 +168,10 @@ pub enum AccountStatus {
     NoSession,
     Loading,
     Ready(UsageSnapshot),
+    /// The workspace has no OpenCode Go subscription. Informational state, not an error.
+    NotSubscribed {
+        workspace_id: Option<String>,
+    },
     Stale {
         last: UsageSnapshot,
         error: String,

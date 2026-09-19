@@ -27,9 +27,10 @@ const ICON_SVG: &[u8] = include_bytes!("static/icon.svg");
 const FAVICON_PNG: &[u8] = include_bytes!("static/favicon.png");
 const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 
-/// Bump when static icons change (sha256 prefix of icon.svg|favicon.png|favicon.svg).
+/// Bump when static assets change (sha256 prefix of
+/// icon.svg|favicon.png|favicon.svg|app.js).
 /// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
-const ASSET_V: &str = "eb92ef56f0";
+const ASSET_V: &str = "171f47bf68";
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
@@ -227,6 +228,14 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             error: Some(no_session_hint(account)),
             failed_at: None,
         },
+        AccountStatus::NotSubscribed { workspace_id } => AccountDto {
+            name: account.name.clone(),
+            provider: account.provider.as_str().into(),
+            status: "not_subscribed",
+            meters: Vec::new(),
+            error: Some(not_subscribed_hint(workspace_id.as_deref())),
+            failed_at: None,
+        },
         AccountStatus::Loading => AccountDto {
             name: account.name.clone(),
             provider: account.provider.as_str().into(),
@@ -283,6 +292,15 @@ fn no_session_hint(account: &Account) -> String {
                 account.name
             )
         }
+    }
+}
+
+fn not_subscribed_hint(workspace_id: Option<&str>) -> String {
+    match workspace_id {
+        Some(wid) => format!(
+            "No OpenCode Go subscription on this workspace — https://opencode.ai/workspace/{wid}/go"
+        ),
+        None => "No OpenCode Go subscription on this workspace".to_string(),
     }
 }
 

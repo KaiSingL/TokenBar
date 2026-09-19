@@ -193,6 +193,16 @@ impl Poller {
                             warn!("Account '{account_name}' has invalid credentials");
                             state.statuses[i] = AccountStatus::NoSession;
                         }
+                        AppError::NotSubscribed => {
+                            info!("Account '{account_name}' has no OpenCode Go subscription");
+                            // A state, not a transient error: even a previous
+                            // Ready snapshot must not degrade to Stale here.
+                            let workspace_id = self
+                                .sessions
+                                .get(&account_name)
+                                .and_then(|s| s.workspace_id.clone());
+                            state.statuses[i] = AccountStatus::NotSubscribed { workspace_id };
+                        }
                         _ => {
                             let already_had_ready =
                                 matches!(&state.statuses[i], AccountStatus::Ready(_));

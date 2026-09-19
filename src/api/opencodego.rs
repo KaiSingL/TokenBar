@@ -17,6 +17,61 @@ const WORKSPACES_SERVER_ID: &str =
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
+/// Coarse classification of an OpenCode Go usage page body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    /// Usage payload present (`rollingUsage` with a `usagePercent`).
+    Subscribed,
+    /// Rendered console payload without a usage payload — the upsell page.
+    NotSubscribed,
+    /// Neither marker matched; treat as a parse failure or a client-only shell.
+    Unknown,
+}
+
+/// Pure classifier for the SSR usage page, in priority order:
+///
+/// 1. usage payload (`rollingUsage` with a `usagePercent`, same check as the
+///    parser) → `Subscribed`
+/// 2. rendered console payload without usage (at least two of `customerID:`,
+///    `referralCode:`, `liteSubscriptionID:`, and a `wrk_` workspace id) →
+///    `NotSubscribed`
+/// 3. otherwise → `Unknown`
+fn classify_usage_page(text: &str) -> PageKind {
+    if parse_subscription_json(text, "", "", Utc::now()).is_some()
+        || extract_double(
+            r#"rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
+            text,
+        )
+        .is_some()
+    {
+        return PageKind::Subscribed;
+    }
+
+    let console_markers = [
+        text.contains("customerID:"),
+        text.contains("referralCode:"),
+        text.contains("liteSubscriptionID:"),
+        text.contains("wrk_"),
+    ]
+    .iter()
+    .filter(|&&found| found)
+    .count();
+
+    if console_markers >= 2 {
+        return PageKind::NotSubscribed;
+    }
+
+    PageKind::Unknown
+}
+
+/// The client-only /console SPA shell served when the usage page redirects to
+/// login: mount point + asset bundle references, and no SSR payload at all.
+fn is_console_client_shell(text: &str) -> bool {
+    text.contains(r#"<div id="app">"#)
+        && text.contains("/console/assets/")
+        && classify_usage_page(text) == PageKind::Unknown
+}
+
 pub struct OpenCodeGoProvider {
     client: Client,
     timeout: Duration,
@@ -97,18 +152,17 @@ impl OpenCodeGoProvider {
             return Err(AppError::InvalidCredentials);
         }
 
-        if parse_subscription_json(&text, "", "", Utc::now()).is_none()
-            && extract_double(
-                r#"rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
-                &text,
-            )
-            .is_none()
-        {
-            error!("Usage page payload missing usage fields");
-            return Err(AppError::Parse("Missing usage fields.".into()));
+        match classify_usage_page(&text) {
+            PageKind::Subscribed => Ok(text),
+            PageKind::NotSubscribed => {
+                warn!("Workspace {workspace_id} has no OpenCode Go subscription");
+                Err(AppError::NotSubscribed)
+            }
+            PageKind::Unknown => {
+                error!("Usage page payload missing usage fields");
+                Err(AppError::Parse("Missing usage fields.".into()))
+            }
         }
-
-        Ok(text)
     }
 
     async fn fetch_server_text(
@@ -197,8 +251,16 @@ async fn fetch_page_text(
         .send()
         .await?;
 
+    // The client follows redirects; landing on /console/login means the
+    // session cookie is expired/invalid, even though the final status is 200.
+    let final_path = resp.url().path().to_string();
     let status = resp.status();
     let body_text = resp.text().await?;
+
+    if final_path.starts_with("/console/login") {
+        warn!("Usage page redirected to console login ({final_path})");
+        return Err(AppError::InvalidCredentials);
+    }
 
     if status != 200 {
         if looks_signed_out(&body_text) {
@@ -211,6 +273,14 @@ async fn fetch_page_text(
             return Err(AppError::Api(format!("HTTP {status}: {msg}")));
         }
         return Err(AppError::Api(format!("HTTP {status}")));
+    }
+
+    // Backstop: a 200 body that is the client-only console shell (no SSR
+    // payload) also means we were bounced to login without a literal
+    // /console/login redirect target.
+    if is_console_client_shell(&body_text) {
+        warn!("Usage page returned the client-only console shell");
+        return Err(AppError::InvalidCredentials);
     }
 
     Ok(body_text)
@@ -321,11 +391,18 @@ fn parse_subscription(
         return Ok(snapshot);
     }
 
-    let rolling_percent = extract_double(
+    let rolling_percent = match extract_double(
         r#"rollingUsage[^}]*?usagePercent\s*:\s*([0-9]+(?:\.[0-9]+)?)"#,
         text,
-    )
-    .ok_or_else(|| AppError::Parse("Missing usage fields.".into()))?;
+    ) {
+        Some(percent) => percent,
+        None => match classify_usage_page(text) {
+            PageKind::NotSubscribed => return Err(AppError::NotSubscribed),
+            PageKind::Subscribed | PageKind::Unknown => {
+                return Err(AppError::Parse("Missing usage fields.".into()))
+            }
+        },
+    };
     let rolling_reset = extract_int(r#"rollingUsage[^}]*?resetInSec\s*:\s*([0-9]+)"#, text)
         .ok_or_else(|| AppError::Parse("Missing usage fields.".into()))?;
 
@@ -700,6 +777,75 @@ fn extract_int(pattern: &str, text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FIXTURE_SUBSCRIBED: &str =
+        include_str!("../../tests/fixtures/opencodego/subscribed.html");
+    const FIXTURE_NOT_SUBSCRIBED: &str =
+        include_str!("../../tests/fixtures/opencodego/not_subscribed.html");
+    const FIXTURE_LOGIN_SHELL: &str =
+        include_str!("../../tests/fixtures/opencodego/login_shell.html");
+
+    #[test]
+    fn test_classify_subscribed_fixture() {
+        assert_eq!(
+            classify_usage_page(FIXTURE_SUBSCRIBED),
+            PageKind::Subscribed
+        );
+    }
+
+    #[test]
+    fn test_parse_subscribed_fixture_integer_percent() {
+        // Regression: usagePercent is integer percent (0.7 means 0.7%).
+        let snapshot =
+            parse_subscription(FIXTURE_SUBSCRIBED, "acc", "wrk_test", Utc::now()).unwrap();
+        assert!((snapshot.rolling.usage_percent - 0.7).abs() < 0.001);
+        assert_eq!(snapshot.rolling.reset_in_sec, 13204);
+        let weekly = snapshot.weekly.expect("weekly window");
+        assert!((weekly.usage_percent - 24.7).abs() < 0.001);
+        assert_eq!(weekly.reset_in_sec, 121171);
+        let monthly = snapshot.monthly.expect("monthly window");
+        assert!((monthly.usage_percent - 36.1).abs() < 0.001);
+        assert_eq!(monthly.reset_in_sec, 1479961);
+    }
+
+    #[test]
+    fn test_classify_not_subscribed_fixture() {
+        assert_eq!(
+            classify_usage_page(FIXTURE_NOT_SUBSCRIBED),
+            PageKind::NotSubscribed
+        );
+    }
+
+    #[test]
+    fn test_parse_not_subscribed_fixture_is_not_subscribed_error() {
+        let err = parse_subscription(FIXTURE_NOT_SUBSCRIBED, "acc", "wrk_test", Utc::now())
+            .expect_err("not-subscribed page must not parse");
+        assert!(matches!(err, AppError::NotSubscribed));
+    }
+
+    #[test]
+    fn test_classify_login_shell_is_unknown() {
+        // The client-only console shell must never be mistaken for a
+        // subscribed or not-subscribed SSR page; it is handled as a
+        // credentials/shell problem before parsing.
+        let kind = classify_usage_page(FIXTURE_LOGIN_SHELL);
+        assert_ne!(kind, PageKind::Subscribed);
+        assert_ne!(kind, PageKind::NotSubscribed);
+        assert_eq!(kind, PageKind::Unknown);
+        assert!(is_console_client_shell(FIXTURE_LOGIN_SHELL));
+    }
+
+    #[test]
+    fn test_parse_synthetic_unknown_body_is_parse_error() {
+        let err = parse_subscription(
+            "<html><body>hello</body></html>",
+            "acc",
+            "wrk_test",
+            Utc::now(),
+        )
+        .expect_err("markerless body must not parse");
+        assert!(matches!(err, AppError::Parse(ref msg) if msg == "Missing usage fields."));
+    }
 
     #[test]
     fn test_looks_signed_out_login() {

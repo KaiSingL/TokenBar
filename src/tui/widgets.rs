@@ -49,6 +49,7 @@ pub fn card_height(status: &AccountStatus, expanded: bool) -> u16 {
         AccountStatus::Ready(s) => visible_meter_count(s, expanded),
         AccountStatus::Stale { last: s, .. } => visible_meter_count(s, expanded) + 1,
         AccountStatus::NoSession => 2,
+        AccountStatus::NotSubscribed { .. } => 2,
         AccountStatus::Loading => 1,
         AccountStatus::Error { .. } => 2,
     };
@@ -129,6 +130,10 @@ fn status_badge(status: &AccountStatus) -> (String, Style) {
         AccountStatus::Stale { .. } => ("stale".into(), Style::default().fg(Color::Yellow)),
         AccountStatus::Error { .. } => ("error".into(), Style::default().fg(Color::Red)),
         AccountStatus::NoSession => ("no session".into(), Style::default().fg(Color::DarkGray)),
+        AccountStatus::NotSubscribed { .. } => (
+            "not subscribed".into(),
+            Style::default().fg(Color::DarkGray),
+        ),
     }
 }
 
@@ -157,6 +162,7 @@ pub fn render_account_card(
         AccountStatus::Error { .. } => Style::default().fg(Color::Red),
         AccountStatus::Stale { .. } => Style::default().fg(Color::Yellow),
         AccountStatus::NoSession => Style::default().fg(Color::DarkGray),
+        AccountStatus::NotSubscribed { .. } => Style::default().fg(Color::DarkGray),
         AccountStatus::Loading => Style::default().fg(Color::Cyan),
         AccountStatus::Ready(_) => Style::default().fg(Color::DarkGray),
     };
@@ -211,6 +217,27 @@ pub fn render_account_card(
                     "Fetching usage…",
                     Style::default().fg(Color::DarkGray),
                 ))),
+                inner,
+            );
+        }
+        AccountStatus::NotSubscribed { workspace_id } => {
+            let hint = match workspace_id {
+                Some(wid) => format!("https://opencode.ai/workspace/{wid}/go"),
+                None => "https://opencode.ai/console".to_string(),
+            };
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        "Not subscribed to OpenCode Go",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    Line::from(Span::styled(
+                        hint,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    )),
+                ]),
                 inner,
             );
         }

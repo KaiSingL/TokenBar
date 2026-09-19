@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/console/favicon.svg" />
+  <title>OpenCode Console</title>
+  <script type="module" crossorigin src="/console/assets/index-BE909v5M.js"></script>
+  <link rel="stylesheet" crossorigin href="/console/assets/index-BgFIhHjv.css">
+</head>
+<body>
+  <script>
+    document.documentElement.dataset.colorScheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light"
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      performance.now = performance.now.bind(performance)
+    }
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      crypto.getRandomValues = crypto.getRandomValues.bind(crypto)
+    }
+    if (typeof fetch === "function") {
+      globalThis.fetch = globalThis.fetch.bind(globalThis)
+    }
+    if (typeof setTimeout === "function") {
+      globalThis.setTimeout = globalThis.setTimeout.bind(globalThis)
+      globalThis.clearTimeout = globalThis.clearTimeout.bind(globalThis)
+    }
+    if (typeof setInterval === "function") {
+      globalThis.setInterval = globalThis.setInterval.bind(globalThis)
+      globalThis.clearInterval = globalThis.clearInterval.bind(globalThis)
+    }
+  </script>
+  <div id="app"></div>
+</body>
+</html>

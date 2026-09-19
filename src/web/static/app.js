@@ -128,6 +128,8 @@ function paintCards() {
       body = `<div class="note dim">Fetching usage…</div>`;
     } else if (status === "no_session") {
       body = `<div class="note dim">${escapeHtml(a.error || "No session")}</div>`;
+    } else if (status === "not_subscribed") {
+      body = `<div class="note dim">${escapeHtml(a.error || "No OpenCode Go subscription")}</div>`;
     } else if (status === "error") {
       body = `<div class="note bad">${escapeHtml(a.error || "Error")}</div>`;
     }
