@@ -100,8 +100,17 @@
       background: currentColor;
       box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
     }
-    .cards { display: grid; gap: 0.75rem; }
+    .cards {
+      display: grid;
+      /* minmax(0, 1fr), not an implicit auto track: an auto track sizes to the
+         widest max-content child, so one long nowrap label (a masked credential
+         like "hermes:opencode-ckibashi · sk-…") widened the whole page past the
+         viewport. min-width:0 below lets the cards shrink and ellipsize instead. */
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.75rem;
+    }
     .card {
+      min-width: 0;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -287,6 +296,7 @@
     }
     .cred-form {
       display: grid;
+      min-width: 0;
       gap: 0.6rem;
       margin-top: 0.6rem;
     }
@@ -302,13 +312,14 @@
       font-size: 0.76rem;
       line-height: 1.35;
     }
-    .src-list { display: grid; gap: 0.4rem; }
+    .src-list { display: grid; min-width: 0; gap: 0.4rem; }
     .src-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 0.5rem;
       width: 100%;
+      min-width: 0;
       min-height: 44px;
       padding: 0.45rem 0.75rem;
       border: 1px solid var(--border);
