@@ -84,6 +84,22 @@ pub fn validate_config(cfg: &crate::model::AppConfig) -> Vec<Finding> {
                     )));
                 }
             }
+            ProviderKind::OpenCodeGo => {
+                // Syntax check only — no store files are read here.
+                if let Some(source) = a
+                    .api_key_source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if !crate::keysource::source_prefix_supported(source) {
+                        out.push(Finding::warn(format!(
+                            "auth.toml: '{}' has an unsupported api_key_source '{source}' (expected 'hermes:<label>' or 'opencode')",
+                            a.name
+                        )));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -218,6 +234,7 @@ mod tests {
             name: name.into(),
             provider,
             api_key: None,
+            api_key_source: None,
         }
     }
 
@@ -292,6 +309,24 @@ mod tests {
         assert!(out.iter().any(|f| {
             f.severity == Severity::Warn && f.text.contains("request_timeout_secs = 0")
         }));
+    }
+
+    #[test]
+    fn go_bad_source_prefix_warns_good_source_silent() {
+        let mut bad = account("badsrc", ProviderKind::OpenCodeGo);
+        bad.api_key_source = Some("bitwarden:x".into());
+        let out = validate_config(&config_with(vec![bad]));
+        assert!(out.iter().any(|f| {
+            f.severity == Severity::Warn && f.text.contains("unsupported api_key_source")
+        }));
+
+        let mut good = account("goodsrc", ProviderKind::OpenCodeGo);
+        good.api_key_source = Some("hermes:lks00".into());
+        let mut also_good = account("oc", ProviderKind::OpenCodeGo);
+        also_good.api_key_source = Some("opencode".into());
+        // Syntax-only check: a valid-shaped source never warns here even when
+        // the store file does not exist (no file I/O in check).
+        assert!(validate_config(&config_with(vec![good, also_good])).is_empty());
     }
 
     #[test]

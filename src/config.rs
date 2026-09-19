@@ -78,6 +78,7 @@ pub fn ensure_account(path: &Path, name: &str, provider: ProviderKind) -> Result
         name: name.to_string(),
         provider,
         api_key: None,
+        api_key_source: None,
     });
     save_config(path, &config)?;
     Ok(true)
@@ -109,6 +110,7 @@ pub fn upsert_api_key_account(
         name: name.to_string(),
         provider,
         api_key: Some(key),
+        api_key_source: None,
     });
     save_config(path, &config)?;
     Ok(true)
@@ -118,6 +120,65 @@ pub fn upsert_api_key_account(
 /// Returns whether the account was newly created.
 pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool, AppError> {
     upsert_api_key_account(path, name, ProviderKind::Zai, api_key)
+}
+
+/// Upsert that sets (or clears, when `None`) `api_key_source` on an account
+/// without disturbing `api_key`, other accounts, or other fields. The source
+/// string is stored trimmed; a blank one is rejected. Returns whether the
+/// account was newly created.
+pub fn set_account_key_source(
+    path: &Path,
+    name: &str,
+    provider: ProviderKind,
+    source: Option<&str>,
+) -> Result<bool, AppError> {
+    let source = match source {
+        None => None,
+        Some(src) => {
+            let trimmed = src.trim().to_string();
+            if trimmed.is_empty() {
+                return Err(AppError::Config(
+                    "api_key_source must not be empty (pass None to clear it)".into(),
+                ));
+            }
+            Some(trimmed)
+        }
+    };
+
+    let mut config = load_config_or_default(path)?;
+    if let Some(account) = config.accounts.iter_mut().find(|a| a.name == name) {
+        account.provider = provider;
+        account.api_key_source = source;
+        save_config(path, &config)?;
+        return Ok(false);
+    }
+
+    config.accounts.push(Account {
+        name: name.to_string(),
+        provider,
+        api_key: None,
+        api_key_source: source,
+    });
+    save_config(path, &config)?;
+    Ok(true)
+}
+
+/// Drop a previously pasted `api_key` on one account. Used when adopting a
+/// key source: an explicit key would keep winning over the source, so it has
+/// to go for the adoption to take effect. No write when no key is stored;
+/// never touches other accounts or fields.
+pub fn clear_account_api_key(path: &Path, name: &str) -> Result<(), AppError> {
+    let mut config = load_config_or_default(path)?;
+    let account = config
+        .accounts
+        .iter_mut()
+        .find(|a| a.name == name)
+        .ok_or_else(|| AppError::Config(format!("account '{name}' not found")))?;
+    if account.api_key.is_none() {
+        return Ok(());
+    }
+    account.api_key = None;
+    save_config(path, &config)
 }
 
 #[cfg(test)]
@@ -168,6 +229,7 @@ mod tests {
             name: "existing".into(),
             provider: ProviderKind::OpenCodeGo,
             api_key: None,
+            api_key_source: None,
         });
         save_config(&path, &cfg).unwrap();
         let before = fs::read_to_string(&path).unwrap();
@@ -201,6 +263,7 @@ mod tests {
             name: "existing".into(),
             provider: ProviderKind::OpenCodeGo,
             api_key: None,
+            api_key_source: None,
         });
         cfg.refresh_interval_secs = 90;
         save_config(&path, &cfg).unwrap();
@@ -241,6 +304,7 @@ mod tests {
                 name: "cookie-go".into(),
                 provider: ProviderKind::OpenCodeGo,
                 api_key: None,
+                api_key_source: None,
             }],
             ..AppConfig::default()
         };
@@ -283,6 +347,124 @@ mod tests {
         let err = upsert_api_key_account(&path, "a", ProviderKind::Zai, "   ").unwrap_err();
         assert!(err.to_string().contains("api_key must not be empty"));
         assert!(!path.exists(), "rejected key must not create auth.toml");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_key_source_sets_and_clears_without_disturbing_api_key() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let cfg = AppConfig {
+            refresh_interval_secs: 120,
+            accounts: vec![
+                Account {
+                    name: "pasted".into(),
+                    provider: ProviderKind::OpenCodeGo,
+                    api_key: Some("sk-pasted".into()),
+                    api_key_source: None,
+                },
+                Account {
+                    name: "cookie-go".into(),
+                    provider: ProviderKind::OpenCodeGo,
+                    api_key: None,
+                    api_key_source: None,
+                },
+            ],
+            ..AppConfig::default()
+        };
+        save_config(&path, &cfg).unwrap();
+
+        // Set on an existing account: api_key (this account's included),
+        // the other account, and global fields stay untouched.
+        assert!(!set_account_key_source(
+            &path,
+            "cookie-go",
+            ProviderKind::OpenCodeGo,
+            Some(" hermes:lks00 ")
+        )
+        .unwrap());
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.refresh_interval_secs, 120);
+        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(loaded.accounts[0].api_key.as_deref(), Some("sk-pasted"));
+        assert!(loaded.accounts[0].api_key_source.is_none());
+        assert_eq!(
+            loaded.accounts[1].api_key_source.as_deref(),
+            Some("hermes:lks00"), // trimmed on the way in
+        );
+        assert!(loaded.accounts[1].api_key.is_none());
+
+        // Clear: removes the field, leaves everything else alone.
+        set_account_key_source(&path, "cookie-go", ProviderKind::OpenCodeGo, None).unwrap();
+        let loaded = load_config(&path).unwrap();
+        assert!(loaded.accounts[1].api_key_source.is_none());
+        assert_eq!(loaded.accounts[0].api_key.as_deref(), Some("sk-pasted"));
+
+        // Create path: a new account gets the source, existing ones intact.
+        assert!(
+            set_account_key_source(&path, "fresh", ProviderKind::OpenCodeGo, Some("opencode"))
+                .unwrap()
+        );
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.accounts.len(), 3);
+        assert_eq!(
+            loaded.accounts[2].api_key_source.as_deref(),
+            Some("opencode")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_key_source_rejects_blank_source() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let err =
+            set_account_key_source(&path, "a", ProviderKind::OpenCodeGo, Some("  ")).unwrap_err();
+        assert!(
+            err.to_string().contains("api_key_source must not be empty"),
+            "{}",
+            err
+        );
+        assert!(!path.exists(), "blank source must not create auth.toml");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_account_api_key_is_surgical_noop_without_key() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let cfg = AppConfig {
+            accounts: vec![
+                Account {
+                    name: "go".into(),
+                    provider: ProviderKind::OpenCodeGo,
+                    api_key: Some("sk-mine".into()),
+                    api_key_source: Some("hermes:lks00".into()),
+                },
+                Account {
+                    name: "other".into(),
+                    provider: ProviderKind::Zai,
+                    api_key: Some("sk-theirs".into()),
+                    api_key_source: None,
+                },
+            ],
+            ..AppConfig::default()
+        };
+        save_config(&path, &cfg).unwrap();
+
+        clear_account_api_key(&path, "go").unwrap();
+        let loaded = load_config(&path).unwrap();
+        assert!(loaded.accounts[0].api_key.is_none());
+        assert_eq!(
+            loaded.accounts[0].api_key_source.as_deref(),
+            Some("hermes:lks00")
+        );
+        assert_eq!(loaded.accounts[1].api_key.as_deref(), Some("sk-theirs"));
+
+        // Second call is a no-op without a write; unknown account errors.
+        clear_account_api_key(&path, "go").unwrap();
+        let err = clear_account_api_key(&path, "ghost").unwrap_err();
+        assert!(err.to_string().contains("account 'ghost' not found"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

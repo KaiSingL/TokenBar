@@ -40,7 +40,8 @@ message and elapsed time.
 - Multi-account TUI dashboard with per-account usage bars
 - Optional **web dashboard** (`tokenbar serve`) for browser / phone on localhost
 - Automatic refresh on a configurable interval (default 60 s)
-- Three providers: **OpenCode Go** (cookie), **ZAI** (API key), **Grok** (OAuth)
+- Three providers: **OpenCode Go** (cookie, API key, or a key referenced
+  from a local store), **ZAI** (API key), **Grok** (OAuth)
 - Embedded browser login for OpenCode Go — no manual cookie hunting
 - Embedded browser login for Grok — device-code OAuth
 - CLI subcommands for status checks and session management
@@ -112,6 +113,7 @@ tokenbar serve --bind 127.0.0.1 --port 8790
 |---|---|
 | `GET /` | Usage UI |
 | `GET /api/status` | JSON snapshot of all accounts |
+| `GET /api/key-sources` | Labels available in the local key stores (never values) |
 | `POST /api/refresh` | Force a poll cycle |
 | `GET /healthz` | Liveness check |
 | `GET /icon.svg` | Header mark (transparent, edge-to-edge) |
@@ -141,6 +143,8 @@ required for normal use.
 | `tokenbar account list` | Print account status (session age, workspace IDs) |
 | `tokenbar account login <name>` | Log in to an OpenCode Go account (opens webview) |
 | `tokenbar account login <name> --provider zai --api-key <key>` | Save a ZAI API key |
+| `tokenbar account login <name> --provider opencode_go --api-key <key>` | Save a validated OpenCode Go API key |
+| `tokenbar account login <name> --provider opencode_go --key-source hermes:lks00` | Adopt a key from a local store |
 | `tokenbar account login <name> --provider grok` | Log in to Grok (opens webview) |
 | `tokenbar account login --cookie <name> --cookie <str>` | Manually set a session cookie |
 | `tokenbar account logout <name>` | Remove a session |
@@ -164,6 +168,7 @@ max_concurrent_fetches = 4
 [[accounts]]
 name = "Personal"
 provider = "opencode_go"
+api_key_source = "hermes:lks00"   # optional: reference a key in a local store
 
 [[accounts]]
 name = "Work"
@@ -173,6 +178,60 @@ api_key = "sk-..."
 
 Session cookies and OAuth tokens are stored in `sessions.json` in the same
 data directory. Do not commit that directory.
+
+### API key sources (`api_key_source`)
+
+Instead of duplicating an OpenCode Go API key into `auth.toml`, an account can
+**reference** a key held in another local store. TokenBar resolves the
+reference at fetch time — no copy is stored, and rotating the key in its store
+is picked up automatically:
+
+```toml
+[[accounts]]
+name = "lks00"
+provider = "opencode_go"
+api_key_source = "hermes:lks00"      # read the key from Hermes' credential pool
+```
+
+Two stores are supported (prefix matching is case-insensitive; surrounding
+whitespace is trimmed):
+
+| Source | Store | Selection |
+|---|---|---|
+| `hermes:<label>` | `~/.hermes/auth.json`, pool `opencode-go` | entry with that `label` (e.g. `lks00`, `laut9810`) |
+| `opencode` | opencode's own `auth.json` — `$OPENCODE_DATA_DIR/auth.json`, else `$XDG_DATA_HOME/opencode/auth.json`, else `~/.local/share/opencode/auth.json` | the single `opencode-go` api entry |
+
+Notes:
+
+- **Env-sourced Hermes credentials** (`"source": "env:OPENCODE_GO_API_KEY"`)
+  carry no key in the file — Hermes resolves them from the environment at its
+  own runtime. TokenBar reports them as *not usable here* (in
+  `GET /api/key-sources` and errors) instead of sending an empty bearer
+  token; pick a `manual` credential.
+- Hermes' `last_status` / `last_error_code` fields (e.g. a 429
+  `GoUsageLimitError` = valid key, capped window) are pool bookkeeping and are
+  surfaced as display metadata only — never as this account's usage meters.
+- **Precedence:** an explicit `api_key` always wins over `api_key_source`,
+  which wins over the scraped session cookie. Adopting a key source
+  (`--key-source` or the dashboard) therefore drops the account's previously
+  pasted key so the source actually takes effect; pasting a key again simply
+  switches back.
+- A configured-but-**broken** source (unknown label, missing store file)
+  surfaces as an error on that account rather than silently falling back to
+  the cookie — you asked for that specific store.
+
+Adopt one from the CLI (resolved and validated against the live usage API
+first, exactly like `--api-key`):
+
+```shell
+tokenbar account login lks00 --provider opencode_go --key-source hermes:lks00
+```
+
+The web dashboard offers the same choices: the credential form lists what the
+local stores contain (`GET /api/key-sources`, labels only) next to the paste
+field, and the credential row shows where an active key comes from
+(`api key · hermes:lks00 · sk-3YL…`). `tokenbar check` warns on
+syntactically unsupported sources.
 
 ## Providers
 
@@ -221,11 +280,12 @@ src/
 ├── session.rs           # sessions.json persistence
 ├── login.rs             # Embedded browser login (wry + tao)
 ├── model.rs             # Data types (Account, UsageSnapshot, …)
+├── keysource.rs         # api_key_source resolution (hermes / opencode stores)
 ├── error.rs             # Error types
 ├── app.rs               # App state and background poller
 ├── api/
 │   ├── mod.rs           # Provider dispatch
-│   ├── opencodego.rs    # OpenCode Go scraping
+│   ├── opencodego.rs    # OpenCode Go scraping + usage API
 │   ├── zai.rs           # ZAI API client
 │   └── grok/            # Grok OAuth + billing
 ├── tui/

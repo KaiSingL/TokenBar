@@ -50,6 +50,11 @@ pub struct Account {
     /// API key for token-based providers (e.g. zai). Omitted for cookie providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Reference to an API key held in another local store (e.g.
+    /// `hermes:lks00` or `opencode`), resolved at fetch time — the key is
+    /// never copied into auth.toml. Lower precedence than `api_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -89,6 +89,82 @@ fn store_api_key_credential(
     }
 }
 
+/// Adopt a key from an external store (`hermes:<label>` / `opencode`) instead
+/// of pasting one. The source is resolved FIRST, so a bad label or missing
+/// store file fails before anything is written or any request is sent; the
+/// resolved key is then validated exactly like the pasted-key path:
+///
+/// - 200 → stored (subscribed)
+/// - 403 → stored, but no Go subscription (informational)
+/// - 401 → NOT stored, clear rejection
+/// - network error → NOT stored
+///
+/// Only the `api_key_source` reference is persisted — the key itself is
+/// never copied into auth.toml and is re-read at fetch time, so rotating it
+/// in the store is picked up automatically. A previously pasted `api_key` on
+/// this account is dropped: an explicit key always wins over a source, so
+/// keeping it would leave the adoption inert.
+pub async fn set_key_source_credential(
+    data_dir: &Path,
+    config_path: &Path,
+    name: &str,
+    source: &str,
+    client: reqwest::Client,
+    timeout: Duration,
+) -> Result<CredentialOutcome, AppError> {
+    let src = source.trim().to_string();
+    if src.is_empty() {
+        return Err(AppError::Config("api_key_source must not be empty".into()));
+    }
+    // Bad label / missing store fails here, before any write or request.
+    let resolved = crate::keysource::resolve(&src)?;
+
+    let check = OpenCodeGoProvider::new(client, timeout)
+        .check_api_key(&resolved.key)
+        .await?;
+
+    // `data_dir` is accepted for symmetry with the other credential entry
+    // points; a key source lives in auth.toml only, no session file.
+    let _ = data_dir;
+
+    store_key_source_credential(config_path, name, &src, check)
+}
+
+/// Store-side of [`set_key_source_credential`]: no network I/O, so the
+/// write / no-write decision is unit-testable.
+fn store_key_source_credential(
+    config_path: &Path,
+    name: &str,
+    source: &str,
+    check: KeyCheck,
+) -> Result<CredentialOutcome, AppError> {
+    match check {
+        KeyCheck::Rejected => Err(AppError::Login(
+            "key rejected by opencode.ai (401) — not stored".into(),
+        )),
+        KeyCheck::NotSubscribed => {
+            persist_key_source(config_path, name, source)?;
+            Ok(CredentialOutcome::StoredNotSubscribed)
+        }
+        KeyCheck::Subscribed(snapshot) => {
+            persist_key_source(config_path, name, source)?;
+            Ok(CredentialOutcome::Stored { snapshot })
+        }
+    }
+}
+
+/// Persist `api_key_source` for `name` and drop this account's pasted
+/// `api_key` so the source actually takes effect (explicit keys win).
+fn persist_key_source(config_path: &Path, name: &str, source: &str) -> Result<(), AppError> {
+    crate::config::set_account_key_source(
+        config_path,
+        name,
+        ProviderKind::OpenCodeGo,
+        Some(source),
+    )?;
+    crate::config::clear_account_api_key(config_path, name)
+}
+
 /// Mask a secret for display: at most first 7 chars + "…" + last 4.
 /// Never returns the input and never the middle of a long secret.
 pub fn mask_secret(value: &str) -> String {
@@ -436,6 +512,90 @@ mod tests {
 
         let loaded = crate::config::load_config(&cfg).unwrap();
         assert_eq!(loaded.accounts[0].api_key.as_deref(), Some("sk-freeload"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- key-source credential store path ----
+
+    #[test]
+    fn store_key_source_401_leaves_auth_toml_byte_identical() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        write_config(&cfg, &["a", "b"]);
+        let before = std::fs::read(&cfg).unwrap();
+
+        let err =
+            store_key_source_credential(&cfg, "a", "hermes:lks00", KeyCheck::Rejected).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("key rejected by opencode.ai (401)"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !err.to_string().contains("sk-"),
+            "error must never contain key material: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&cfg).unwrap(),
+            before,
+            "a rejected source must leave auth.toml byte-identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_key_source_persists_reference_and_preserves_other_accounts() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        // Account "a" has a pasted key that must make way for the adoption;
+        // account "b"'s key must survive untouched.
+        std::fs::write(
+            &cfg,
+            "[[accounts]]\nname = \"a\"\nprovider = \"opencode_go\"\napi_key = \"sk-old-pasted\"\n\n\
+             [[accounts]]\nname = \"b\"\nprovider = \"zai\"\napi_key = \"sk-theirs\"\n",
+        )
+        .unwrap();
+
+        let out = store_key_source_credential(
+            &cfg,
+            "a",
+            "hermes:lks00",
+            KeyCheck::Subscribed(sample_snapshot()),
+        )
+        .unwrap();
+        assert!(matches!(out, CredentialOutcome::Stored { .. }));
+
+        let loaded = crate::config::load_config(&cfg).unwrap();
+        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(
+            loaded.accounts[0].api_key_source.as_deref(),
+            Some("hermes:lks00")
+        );
+        assert!(
+            loaded.accounts[0].api_key.is_none(),
+            "a pasted key would keep winning over the adopted source"
+        );
+        assert_eq!(loaded.accounts[1].name, "b");
+        assert_eq!(loaded.accounts[1].api_key.as_deref(), Some("sk-theirs"));
+        assert!(loaded.accounts[1].api_key_source.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_key_source_403_persists_but_reports_not_subscribed() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        write_config(&cfg, &["a"]);
+
+        let out =
+            store_key_source_credential(&cfg, "a", "opencode", KeyCheck::NotSubscribed).unwrap();
+        assert!(matches!(out, CredentialOutcome::StoredNotSubscribed));
+
+        let loaded = crate::config::load_config(&cfg).unwrap();
+        assert_eq!(
+            loaded.accounts[0].api_key_source.as_deref(),
+            Some("opencode")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

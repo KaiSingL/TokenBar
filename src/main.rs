@@ -12,6 +12,7 @@ mod app;
 mod check;
 mod config;
 mod error;
+mod keysource;
 mod login;
 mod model;
 mod session;
@@ -81,6 +82,12 @@ enum AccountCommands {
         /// For z.ai you can also set Z_AI_API_KEY.
         #[arg(long)]
         api_key: Option<String>,
+        /// Adopt an OpenCode Go API key from a local store instead of pasting
+        /// one: `hermes:<label>` (Hermes credential pool) or `opencode`
+        /// (opencode's own auth.json). Validated against the live API; only
+        /// the reference is stored, the key is re-read at fetch time.
+        #[arg(long)]
+        key_source: Option<String>,
         /// Store a manually captured session cookie instead of the browser flow
         #[arg(long)]
         cookie: Option<String>,
@@ -244,30 +251,71 @@ fn print_status(
                     );
                 }
             }
-            model::ProviderKind::OpenCodeGo => match sessions.sessions.get(&account.name) {
-                Some(entry) if !entry.cookie.trim().is_empty() => {
-                    let wid = entry
-                        .workspace_id
-                        .as_deref()
-                        .unwrap_or("(discover on next poll)");
-                    let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+            model::ProviderKind::OpenCodeGo => {
+                let has_pasted_key = account
+                    .api_key
+                    .as_ref()
+                    .map(|k| !k.trim().is_empty())
+                    .unwrap_or(false);
+                let source = account
+                    .api_key_source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if has_pasted_key {
                     println!(
-                        "  {:<16}  {:<12}  session ok  workspace {}  updated {} ago",
+                        "  {:<16}  {:<12}  api key ok  (pasted --api-key)",
                         account.name,
                         provider_label(account.provider),
-                        wid,
-                        format_age(age.num_seconds())
                     );
+                } else if let Some(source) = source {
+                    // Reference into an external store; show whether it
+                    // resolves right now (plus display-only bookkeeping).
+                    match keysource::resolve(source) {
+                        Ok(rk) => {
+                            let status = rk.status.as_deref().unwrap_or("");
+                            let sep = if status.is_empty() { "" } else { " · " };
+                            println!(
+                                "  {:<16}  {:<12}  api key ok  ({source}{sep}{status})",
+                                account.name,
+                                provider_label(account.provider),
+                            );
+                        }
+                        Err(e) => {
+                            println!(
+                                "  {:<16}  {:<12}  key source broken  ({source}: {e})",
+                                account.name,
+                                provider_label(account.provider),
+                            );
+                        }
+                    }
+                } else {
+                    match sessions.sessions.get(&account.name) {
+                        Some(entry) if !entry.cookie.trim().is_empty() => {
+                            let wid = entry
+                                .workspace_id
+                                .as_deref()
+                                .unwrap_or("(discover on next poll)");
+                            let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
+                            println!(
+                                "  {:<16}  {:<12}  session ok  workspace {}  updated {} ago",
+                                account.name,
+                                provider_label(account.provider),
+                                wid,
+                                format_age(age.num_seconds())
+                            );
+                        }
+                        _ => {
+                            println!(
+                                "  {:<16}  {:<12}  no session  (run: tokenbar account login {})",
+                                account.name,
+                                provider_label(account.provider),
+                                account.name
+                            );
+                        }
+                    }
                 }
-                _ => {
-                    println!(
-                        "  {:<16}  {:<12}  no session  (run: tokenbar account login {})",
-                        account.name,
-                        provider_label(account.provider),
-                        account.name
-                    );
-                }
-            },
+            }
             model::ProviderKind::Grok => match sessions.sessions.get(&account.name) {
                 Some(entry) if entry.has_grok_session() => {
                     let age = chrono::Utc::now().signed_duration_since(entry.updated_at);
@@ -366,12 +414,30 @@ async fn run_account_command(
             name,
             provider,
             api_key,
+            key_source,
             cookie,
             json_file_path,
             force,
         } => {
             let provider = model::ProviderKind::parse_cli(&provider)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            if api_key.is_some() && key_source.is_some() {
+                return Err(
+                    "--api-key and --key-source are mutually exclusive (the pasted key would always win)"
+                        .into(),
+                );
+            }
+            if let Some(source) = key_source.as_deref() {
+                if provider != model::ProviderKind::OpenCodeGo {
+                    return Err(format!(
+                        "--key-source is only supported for opencode_go accounts (got {})",
+                        provider.as_str()
+                    )
+                    .into());
+                }
+                store_opencode_go_key_source(&name, source, data_dir, config_path).await?;
+                return Ok(());
+            }
             let cookie_val = if let Some(c) = cookie {
                 Some(c)
             } else if let Some(path) = json_file_path {
@@ -453,6 +519,56 @@ async fn store_opencode_go_api_key(
         }
         Ok(account::CredentialOutcome::StoredNotSubscribed) => {
             println!("API key stored for account '{name}' (opencode_go)");
+            println!("  Note: key is valid but has no OpenCode Go subscription (403)");
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// CLI path for `account login <name> --provider opencode_go --key-source …`:
+/// resolve the source (a bad label fails before anything is written),
+/// validate against the live usage API, then persist the reference only.
+async fn store_opencode_go_key_source(
+    name: &str,
+    source: &str,
+    data_dir: &std::path::Path,
+    config_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder().build()?;
+    let outcome = account::set_key_source_credential(
+        data_dir,
+        config_path,
+        name,
+        source,
+        client,
+        std::time::Duration::from_secs(15),
+    )
+    .await;
+    match outcome {
+        Ok(account::CredentialOutcome::Stored { snapshot }) => {
+            println!("API key from {source} stored for account '{name}' (opencode_go)");
+            println!("  Key stays in its store; tokenbar re-reads it at fetch time.");
+            println!(
+                "  Usage: rolling {:.0}% (resets {}), weekly {:.0}%, monthly {:.0}%",
+                snapshot.rolling.usage_percent,
+                tui::widgets::format_reset(snapshot.rolling.reset_in_sec),
+                snapshot
+                    .weekly
+                    .as_ref()
+                    .map(|w| w.usage_percent)
+                    .unwrap_or(0.0),
+                snapshot
+                    .monthly
+                    .as_ref()
+                    .map(|m| m.usage_percent)
+                    .unwrap_or(0.0),
+            );
+            Ok(())
+        }
+        Ok(account::CredentialOutcome::StoredNotSubscribed) => {
+            println!("API key from {source} stored for account '{name}' (opencode_go)");
+            println!("  Key stays in its store; tokenbar re-reads it at fetch time.");
             println!("  Note: key is valid but has no OpenCode Go subscription (403)");
             Ok(())
         }

@@ -13,6 +13,11 @@ const expandedCards = new Set();
 const openCredCards = new Set();
 const credNotes = new Map(); // name -> { text, bad }
 const pendingCred = new Set();
+// Local key stores (labels only — the server never sends values), cached
+// briefly so the 10s poll does not re-read the stores on every paint.
+let keySourcesCache = null;
+let keySourcesFetchedAt = 0;
+const KEY_SOURCES_TTL_MS = 60_000;
 
 function hiddenMask(meters) {
   if (!meters || !meters.length) return [];
@@ -90,8 +95,22 @@ function cssEscape(s) {
 
 function credRowHtml(a) {
   const c = a.credential;
-  const kindTxt = !c ? "none" : c.kind === "api_key" ? "api key" : "cookie";
-  const maskTxt = c ? String(c.masked || "") : "no key or cookie stored";
+  const kindTxt = !c
+    ? "none"
+    : c.kind === "api_key"
+      ? "api key"
+      : c.kind === "key_source"
+        ? "key source"
+        : "cookie";
+  // A store-resolved key shows where it comes from: "hermes:lks00 · sk-3YL…".
+  let maskTxt;
+  if (!c) {
+    maskTxt = "no key or cookie stored";
+  } else if (c.kind === "api_key" && c.source) {
+    maskTxt = `${c.source} · ${c.masked || ""}`;
+  } else {
+    maskTxt = String(c.masked || "");
+  }
   const btn = isGoProvider(a.provider)
     ? `<button type="button" class="cred-btn" data-cred-open="${escapeHtml(a.name)}">${c ? "update key" : "set key"}</button>`
     : "";
@@ -108,6 +127,30 @@ function credNoteHtml(a) {
   return `<div class="note${note.bad ? " bad" : " dim"}">${escapeHtml(note.text)}</div>`;
 }
 
+function srcListHtml(a) {
+  if (!keySourcesCache) {
+    return `<div class="src-hint">checking local key stores…</div>`;
+  }
+  if (!keySourcesCache.length) {
+    return `<div class="src-hint">no keys found in the local stores (hermes / opencode)</div>`;
+  }
+  return `<div class="src-list">${keySourcesCache
+    .map((s) => {
+      const ref = s.source_ref || (s.store + (s.label ? `:${s.label}` : ""));
+      const dis = !s.usable || pendingCred.has(a.name) ? " disabled" : "";
+      const note = s.usable
+        ? s.status
+          ? `${s.store} · ${s.status}`
+          : s.store
+        : s.reason || s.store;
+      return `<button type="button" class="src-row" data-cred-src="${escapeHtml(ref)}" title="${escapeHtml(note)}"${dis}>
+        <span class="src-ref">${escapeHtml(ref)}</span>
+        <span class="src-note">${escapeHtml(note)}</span>
+      </button>`;
+    })
+    .join("")}</div>`;
+}
+
 function credFormHtml(a) {
   const busy = pendingCred.has(a.name);
   const dis = busy ? " disabled" : "";
@@ -120,6 +163,10 @@ function credFormHtml(a) {
     <div class="cred-actions">
       <button type="button" class="cred-save" data-cred-save="${escapeHtml(a.name)}"${dis}>${busy ? "checking…" : "save key"}</button>
       <button type="button" class="cred-cancel" data-cred-cancel="${escapeHtml(a.name)}"${dis}>cancel</button>
+    </div>
+    <div class="src-section">
+      <div class="src-hint">or adopt a key already on this machine (it stays in its store; tokenbar reads it at fetch time)</div>
+      ${srcListHtml(a)}
     </div>
   </div>`;
 }
@@ -163,17 +210,29 @@ function restoreCredForms(state) {
   });
 }
 
-async function submitCred(name) {
-  if (!name || pendingCred.has(name)) return;
-  const form = findCredForm(name);
-  const input = form ? form.querySelector(".cred-input") : null;
-  if (!form || !input) return;
-  const value = (input.value || "").trim();
-  if (!value) {
-    credNotes.set(name, { text: "paste an api key first", bad: true });
-    paintCards();
-    return;
+// Fetch the local key-source listing (labels only) unless a fresh copy is
+// cached. Repaints so the list appears as soon as it lands.
+async function ensureKeySources(force = false) {
+  const fresh = Date.now() - keySourcesFetchedAt < KEY_SOURCES_TTL_MS;
+  if (!force && keySourcesCache && fresh) return;
+  try {
+    const res = await fetch("/api/key-sources", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    keySourcesCache = Array.isArray(data.sources) ? data.sources : [];
+    keySourcesFetchedAt = Date.now();
+  } catch {
+    // Keep whatever we had; an empty list still renders a hint.
+    if (!keySourcesCache) keySourcesCache = [];
+    keySourcesFetchedAt = Date.now();
   }
+  paintCards();
+}
+
+// Shared POST + response handling for both credential kinds. `body` is
+// {kind:"api_key",value} or {kind:"key_source",value:"hermes:lks00"}.
+async function postCredential(name, body) {
+  if (!name || pendingCred.has(name)) return;
   pendingCred.add(name);
   credNotes.set(name, { text: "checking…", bad: false });
   paintCards();
@@ -181,7 +240,7 @@ async function submitCred(name) {
     const res = await fetch(`/api/accounts/${encodeURIComponent(name)}/credential`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-TokenBar": "1" },
-      body: JSON.stringify({ kind: "api_key", value }),
+      body: JSON.stringify(body),
     });
     let data = {};
     try {
@@ -203,6 +262,24 @@ async function submitCred(name) {
     credNotes.set(name, { text: (e && e.message) || "network error", bad: true });
     paintCards();
   }
+}
+
+async function submitCred(name) {
+  if (!name || pendingCred.has(name)) return;
+  const form = findCredForm(name);
+  const input = form ? form.querySelector(".cred-input") : null;
+  if (!form || !input) return;
+  const value = (input.value || "").trim();
+  if (!value) {
+    credNotes.set(name, { text: "paste an api key first", bad: true });
+    paintCards();
+    return;
+  }
+  postCredential(name, { kind: "api_key", value });
+}
+
+function submitKeySource(name, ref) {
+  postCredential(name, { kind: "key_source", value: ref });
 }
 
 function render(data, fetchedAt) {
@@ -311,6 +388,14 @@ cardsEl.addEventListener("click", async (e) => {
       const input = form.querySelector(".cred-input");
       if (input) input.focus();
     }
+    ensureKeySources();
+    return;
+  }
+  const srcBtn = e.target.closest("[data-cred-src]");
+  if (srcBtn) {
+    const form = srcBtn.closest(".cred-form");
+    const name = form ? form.dataset.credName : null;
+    if (name && !srcBtn.disabled) submitKeySource(name, srcBtn.dataset.credSrc);
     return;
   }
   const cancelBtn = e.target.closest("[data-cred-cancel]");

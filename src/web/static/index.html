@@ -290,6 +290,55 @@
       gap: 0.6rem;
       margin-top: 0.6rem;
     }
+    .src-section {
+      margin-top: 0.7rem;
+      padding-top: 0.65rem;
+      border-top: 1px dashed var(--border);
+      display: grid;
+      gap: 0.45rem;
+    }
+    .src-hint {
+      color: var(--dim);
+      font-size: 0.76rem;
+      line-height: 1.35;
+    }
+    .src-list { display: grid; gap: 0.4rem; }
+    .src-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      width: 100%;
+      min-height: 44px;
+      padding: 0.45rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--fg);
+      font: inherit;
+      font-size: 0.85rem;
+      text-align: left;
+      cursor: pointer;
+    }
+    .src-row:not(:disabled):active { transform: scale(0.98); }
+    .src-row:disabled { opacity: 0.5; cursor: default; }
+    .src-ref {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .src-note {
+      flex-shrink: 0;
+      max-width: 55%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--dim);
+      font-size: 0.74rem;
+    }
     .cred-input-row { display: flex; gap: 0.5rem; }
     .cred-input {
       flex: 1;
