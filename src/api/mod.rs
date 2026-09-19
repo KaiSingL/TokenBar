@@ -22,14 +22,31 @@ pub async fn fetch_for_account(
 ) -> Result<FetchResult, AppError> {
     match account.provider {
         ProviderKind::OpenCodeGo => {
-            let entry = session.ok_or(AppError::InvalidCredentials)?;
-            let snapshot = opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
-                .fetch_usage(&account.name, &entry.cookie, entry.workspace_id.as_deref())
-                .await?;
-            Ok(FetchResult {
-                snapshot,
-                session: None,
-            })
+            // An API key wins when present; no SessionEntry required.
+            // Otherwise the scraped-cookie path is unchanged.
+            if let Some(api_key) = account
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+            {
+                let snapshot = opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
+                    .fetch_usage_via_api(&account.name, api_key)
+                    .await?;
+                Ok(FetchResult {
+                    snapshot,
+                    session: None,
+                })
+            } else {
+                let entry = session.ok_or(AppError::InvalidCredentials)?;
+                let snapshot = opencodego::OpenCodeGoProvider::new(client.clone(), timeout)
+                    .fetch_usage(&account.name, &entry.cookie, entry.workspace_id.as_deref())
+                    .await?;
+                Ok(FetchResult {
+                    snapshot,
+                    session: None,
+                })
+            }
         }
         ProviderKind::Zai => {
             let api_key = resolve_zai_api_key(account).ok_or(AppError::InvalidCredentials)?;
@@ -53,9 +70,17 @@ pub async fn fetch_for_account(
 
 pub fn has_credentials(account: &Account, session: Option<&SessionEntry>) -> bool {
     match account.provider {
-        ProviderKind::OpenCodeGo => session
-            .map(|s| !s.cookie.trim().is_empty())
-            .unwrap_or(false),
+        ProviderKind::OpenCodeGo => {
+            let has_api_key = account
+                .api_key
+                .as_deref()
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false);
+            has_api_key
+                || session
+                    .map(|s| !s.cookie.trim().is_empty())
+                    .unwrap_or(false)
+        }
         ProviderKind::Zai => resolve_zai_api_key(account).is_some(),
         ProviderKind::Grok => session.map(|s| s.has_grok_session()).unwrap_or(false),
     }

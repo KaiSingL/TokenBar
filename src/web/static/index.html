@@ -222,6 +222,96 @@
     }
     .note.bad { color: var(--bad); }
     .note.dim { color: var(--dim); }
+    .cred-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      padding-top: 0.7rem;
+      border-top: 1px solid var(--border);
+    }
+    .cred-kind {
+      flex-shrink: 0;
+      font-size: 0.7rem;
+      font-weight: 650;
+      color: var(--accent);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      border-radius: 999px;
+      padding: 0.22rem 0.55rem;
+      white-space: nowrap;
+    }
+    .cred-kind.none { color: var(--dim); }
+    .cred-mask {
+      flex: 1;
+      min-width: 0;
+      color: var(--dim);
+      font-size: 0.78rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cred-btn, .cred-eye, .cred-cancel {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      min-width: 44px;
+      padding: 0 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .cred-btn { color: var(--accent); }
+    .cred-form {
+      display: grid;
+      gap: 0.5rem;
+      margin-top: 0.6rem;
+    }
+    .cred-input-row { display: flex; gap: 0.4rem; }
+    .cred-input {
+      flex: 1;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 16px; /* ≥16px so iOS does not auto-zoom on focus */
+    }
+    .cred-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .cred-actions { display: flex; gap: 0.4rem; }
+    .cred-save {
+      flex: 1;
+      min-height: 44px;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+      color: var(--accent);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .cred-btn:active, .cred-eye:active, .cred-save:active, .cred-cancel:active {
+      transform: scale(0.97);
+    }
+    .cred-btn:disabled, .cred-eye:disabled, .cred-save:disabled, .cred-cancel:disabled,
+    .cred-input:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
     .empty, .err-page {
       text-align: center;
       color: var(--muted);

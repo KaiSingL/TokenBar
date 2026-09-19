@@ -77,7 +77,8 @@ enum AccountCommands {
         /// Provider: opencode_go (default), zai, or grok
         #[arg(long, default_value = "opencode_go")]
         provider: String,
-        /// z.ai API key (or set Z_AI_API_KEY). Ignored for opencode_go.
+        /// API key (z.ai, or opencode_go — validated against the live API).
+        /// For z.ai you can also set Z_AI_API_KEY.
         #[arg(long)]
         api_key: Option<String>,
         /// Store a manually captured session cookie instead of the browser flow
@@ -136,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::Account { action }) => {
             init_console_tracing(env_filter);
-            run_account_command(action, &config_path, &data_dir)?;
+            run_account_command(action, &config_path, &data_dir).await?;
             Ok(())
         }
         None => {
@@ -352,7 +353,7 @@ fn print_status(
     Ok(())
 }
 
-fn run_account_command(
+async fn run_account_command(
     cmd: AccountCommands,
     config_path: &std::path::Path,
     data_dir: &std::path::Path,
@@ -382,20 +383,25 @@ fn run_account_command(
             } else {
                 None
             };
-            match cookie_val {
-                Some(cookie) => {
-                    if provider != model::ProviderKind::OpenCodeGo {
-                        return Err(format!(
-                            "--cookie is only supported for opencode_go accounts (got {})",
-                            provider.as_str()
-                        )
-                        .into());
-                    }
-                    account::store_session_cookie(data_dir, config_path, &name, cookie)?;
+            if let Some(cookie) = cookie_val {
+                if provider != model::ProviderKind::OpenCodeGo {
+                    return Err(format!(
+                        "--cookie is only supported for opencode_go accounts (got {})",
+                        provider.as_str()
+                    )
+                    .into());
                 }
-                None => {
-                    login::run_login_flow(&name, force, provider, api_key, data_dir, config_path)?;
-                }
+                account::store_session_cookie(data_dir, config_path, &name, cookie)?;
+            } else if provider == model::ProviderKind::OpenCodeGo && api_key.is_some() {
+                store_opencode_go_api_key(
+                    &name,
+                    api_key.as_deref().unwrap_or_default(),
+                    data_dir,
+                    config_path,
+                )
+                .await?;
+            } else {
+                login::run_login_flow(&name, force, provider, api_key, data_dir, config_path)?;
             }
         }
         AccountCommands::Logout { name } => {
@@ -415,6 +421,43 @@ fn run_account_command(
         }
     }
     Ok(())
+}
+
+/// CLI path for `account login <name> --provider opencode_go --api-key …`:
+/// validate against the live usage API, then store (no webview, no cookie).
+async fn store_opencode_go_api_key(
+    name: &str,
+    api_key: &str,
+    data_dir: &std::path::Path,
+    config_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match account::set_api_key_credential(data_dir, config_path, name, api_key).await {
+        Ok(account::CredentialOutcome::Stored { snapshot }) => {
+            println!("API key stored for account '{name}' (opencode_go)");
+            println!(
+                "  Usage: rolling {:.0}% (resets {}), weekly {:.0}%, monthly {:.0}%",
+                snapshot.rolling.usage_percent,
+                tui::widgets::format_reset(snapshot.rolling.reset_in_sec),
+                snapshot
+                    .weekly
+                    .as_ref()
+                    .map(|w| w.usage_percent)
+                    .unwrap_or(0.0),
+                snapshot
+                    .monthly
+                    .as_ref()
+                    .map(|m| m.usage_percent)
+                    .unwrap_or(0.0),
+            );
+            Ok(())
+        }
+        Ok(account::CredentialOutcome::StoredNotSubscribed) => {
+            println!("API key stored for account '{name}' (opencode_go)");
+            println!("  Note: key is valid but has no OpenCode Go subscription (403)");
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn run_tui(
@@ -472,7 +515,14 @@ async fn run_serve(
         .parse()
         .map_err(|e| format!("Invalid bind address {bind_host}:{port}: {e}"))?;
 
-    let serve_result = web::run_server(state, event_tx.clone(), bind).await;
+    let serve_result = web::run_server(
+        state,
+        event_tx.clone(),
+        data_dir.to_path_buf(),
+        config_path.to_path_buf(),
+        bind,
+    )
+    .await;
 
     let _ = event_tx.send(app::AppEvent::Quit).await;
     let _ = poller_handle.await;

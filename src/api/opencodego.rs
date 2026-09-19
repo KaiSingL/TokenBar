@@ -12,6 +12,7 @@ use crate::model::{UsageSnapshot, UsageWindow};
 
 const BASE_URL: &str = "https://opencode.ai";
 const SERVER_URL: &str = "https://opencode.ai/_server";
+const USAGE_API_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 const WORKSPACES_SERVER_ID: &str =
     "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
@@ -72,6 +73,18 @@ fn is_console_client_shell(text: &str) -> bool {
         && classify_usage_page(text) == PageKind::Unknown
 }
 
+/// Live-API verdict for a candidate OpenCode Go API key.
+/// Keyed off the HTTP status; the response body is advisory only.
+#[derive(Debug)]
+pub enum KeyCheck {
+    /// 200 — key accepted and subscribed; the usage snapshot it returned.
+    Subscribed(UsageSnapshot),
+    /// 403 — key is valid but has no Go subscription.
+    NotSubscribed,
+    /// 401 — key rejected.
+    Rejected,
+}
+
 pub struct OpenCodeGoProvider {
     client: Client,
     timeout: Duration,
@@ -106,6 +119,62 @@ impl OpenCodeGoProvider {
         let snapshot = parse_subscription(&page_text, account_name, &workspace_id, now)?;
 
         Ok(snapshot)
+    }
+
+    /// Fetch usage through the official JSON API with an API key
+    /// (`GET /zen/go/v1/usage`, `Authorization: Bearer <key>`).
+    /// No session cookie or workspace id required.
+    pub async fn fetch_usage_via_api(
+        &self,
+        account_name: &str,
+        api_key: &str,
+    ) -> Result<UsageSnapshot, AppError> {
+        debug!("fetch_usage_via_api for account {}", account_name);
+
+        let key = api_key.trim();
+        if key.is_empty() {
+            return Err(AppError::InvalidCredentials);
+        }
+
+        let (status, body) = self.usage_api_get(key).await?;
+        if !(200..300).contains(&status) {
+            return Err(map_api_status(status, &body));
+        }
+        parse_usage_body(&body, account_name, Utc::now())
+    }
+
+    /// Validate a candidate API key against the live usage endpoint without
+    /// persisting anything. 401/403 are verdicts here, not errors.
+    pub async fn check_api_key(&self, api_key: &str) -> Result<KeyCheck, AppError> {
+        let (status, body) = self.usage_api_get(api_key.trim()).await?;
+        match status {
+            401 => Ok(KeyCheck::Rejected),
+            403 => Ok(KeyCheck::NotSubscribed),
+            s if (200..300).contains(&s) => Ok(KeyCheck::Subscribed(parse_usage_body(
+                &body,
+                "validate",
+                Utc::now(),
+            )?)),
+            s => Err(map_api_status(s, &body)),
+        }
+    }
+
+    /// Raw GET of the usage API. Returns (status, body); the key is never
+    /// logged.
+    async fn usage_api_get(&self, api_key: &str) -> Result<(u16, String), AppError> {
+        let resp = self
+            .client
+            .get(USAGE_API_URL)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Accept", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(AppError::Network)?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.map_err(AppError::Network)?;
+        Ok((status, body))
     }
 
     async fn fetch_workspace_id(&self, cookie: &str) -> Result<String, AppError> {
@@ -330,6 +399,101 @@ fn extract_server_error_message(text: &str) -> Option<String> {
                     }
                 }
             }
+        }
+    }
+    None
+}
+
+fn missing_usage_fields() -> AppError {
+    AppError::Parse("Missing usage fields.".to_string())
+}
+
+/// Parse a 200 body from the official usage API into a snapshot.
+///
+/// Requires the `usage` object with rolling/weekly/monthly windows, each
+/// carrying a numeric `percent` (already 0–100 — never normalized).
+/// `resetsAt` becomes a countdown from `now`, clamped at 0. Labels are
+/// Rolling/Weekly/Monthly, identical to what the cookie scraper emits.
+fn parse_usage_body(
+    body: &str,
+    account_name: &str,
+    now: DateTime<Utc>,
+) -> Result<UsageSnapshot, AppError> {
+    let val: Value = serde_json::from_str(body).map_err(|_| missing_usage_fields())?;
+    let usage = val
+        .get("usage")
+        .and_then(Value::as_object)
+        .ok_or_else(missing_usage_fields)?;
+
+    let rolling = api_usage_window(usage.get("rolling"), "Rolling", now)?;
+    let weekly = api_usage_window(usage.get("weekly"), "Weekly", now)?;
+    let monthly = api_usage_window(usage.get("monthly"), "Monthly", now)?;
+
+    Ok(UsageSnapshot {
+        account_name: account_name.to_string(),
+        rolling,
+        weekly: Some(weekly),
+        monthly: Some(monthly),
+        updated_at: now,
+        workspace_id: None,
+    })
+}
+
+/// One window of the usage API. A missing window or a missing/non-numeric
+/// `percent` is the same failure class as the scraper: `Missing usage fields.`
+fn api_usage_window(
+    val: Option<&Value>,
+    label: &str,
+    now: DateTime<Utc>,
+) -> Result<UsageWindow, AppError> {
+    let dict = val
+        .and_then(Value::as_object)
+        .ok_or_else(missing_usage_fields)?;
+    let percent = double_from_value(dict.get("percent")).ok_or_else(missing_usage_fields)?;
+    let reset_in_sec = date_from_value(dict.get("resetsAt"))
+        .map(|ts| (ts - now.timestamp()).max(0) as u64)
+        .unwrap_or(0);
+    Ok(UsageWindow::with_label(
+        percent.clamp(0.0, 100.0),
+        reset_in_sec,
+        label,
+    ))
+}
+
+/// Map a non-2xx usage-API status to an error. Keyed off the status only;
+/// the body is advisory (403 bodies are documented, not captured).
+fn map_api_status(status: u16, body: &str) -> AppError {
+    match status {
+        401 => AppError::InvalidCredentials,
+        403 => AppError::NotSubscribed,
+        _ => match extract_api_error_message(body) {
+            Some(msg) => AppError::Api(format!("HTTP {status}: {msg}")),
+            None => AppError::Api(format!("HTTP {status}")),
+        },
+    }
+}
+
+/// Error-message extraction for the usage API, in the same style as
+/// `extract_server_error_message` but also understanding the nested
+/// `{"error": {"message": …}}` envelope the API uses.
+fn extract_api_error_message(text: &str) -> Option<String> {
+    let val: Value = serde_json::from_str(text).ok()?;
+    let obj = val.as_object()?;
+    if let Some(error) = obj.get("error") {
+        if let Some(msg) = error
+            .as_object()
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+        {
+            return Some(msg.to_string());
+        }
+        if let Some(s) = error.as_str() {
+            return Some(s.to_string());
+        }
+    }
+    for key in &["message", "detail"] {
+        if let Some(s) = obj.get(*key).and_then(Value::as_str) {
+            return Some(s.to_string());
         }
     }
     None
@@ -784,6 +948,12 @@ mod tests {
         include_str!("../../tests/fixtures/opencodego/not_subscribed.html");
     const FIXTURE_LOGIN_SHELL: &str =
         include_str!("../../tests/fixtures/opencodego/login_shell.html");
+    const FIXTURE_API_USAGE_OK: &str =
+        include_str!("../../tests/fixtures/opencodego/api_usage_ok.json");
+    const FIXTURE_API_USAGE_401: &str =
+        include_str!("../../tests/fixtures/opencodego/api_usage_unauthorized_401.json");
+    const FIXTURE_API_USAGE_403: &str =
+        include_str!("../../tests/fixtures/opencodego/api_usage_entitlement_403.json");
 
     #[test]
     fn test_classify_subscribed_fixture() {
@@ -984,5 +1154,107 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"wrk_abc123".to_string()));
         assert!(ids.contains(&"wrk_def456".to_string()));
+    }
+
+    // ---- official usage API (api key path) ----
+
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-19T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn test_parse_usage_api_ok_fixture() {
+        // Expectations derived from the fixture's resetsAt vs the fixed now:
+        // rolling  2026-09-19T18:00:33.055Z - 17:00:00Z = 3633s
+        // weekly   2026-09-21T00:00:00.055Z - 17:00:00Z = 111600s
+        // monthly  2026-10-06T17:26:30.055Z - 17:00:00Z = 1470390s
+        let snap = parse_usage_body(FIXTURE_API_USAGE_OK, "go-api", fixed_now()).unwrap();
+        assert_eq!(snap.account_name, "go-api");
+        assert!((snap.rolling.usage_percent - 2.0).abs() < 0.001);
+        assert_eq!(snap.rolling.label.as_deref(), Some("Rolling"));
+        assert_eq!(snap.rolling.reset_in_sec, 3633);
+        let weekly = snap.weekly.expect("weekly window");
+        assert!((weekly.usage_percent - 25.0).abs() < 0.001);
+        assert_eq!(weekly.label.as_deref(), Some("Weekly"));
+        assert_eq!(weekly.reset_in_sec, 111_600);
+        let monthly = snap.monthly.expect("monthly window");
+        assert!((monthly.usage_percent - 36.0).abs() < 0.001);
+        assert_eq!(monthly.label.as_deref(), Some("Monthly"));
+        assert_eq!(monthly.reset_in_sec, 1_470_390);
+        assert!(snap.workspace_id.is_none());
+    }
+
+    #[test]
+    fn test_parse_usage_api_percent_not_normalized() {
+        // percent is already 0-100: 2 must stay 2 (not 0.02, not 200).
+        let snap = parse_usage_body(FIXTURE_API_USAGE_OK, "a", fixed_now()).unwrap();
+        assert!((snap.rolling.usage_percent - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_usage_api_past_resets_clamp_to_zero() {
+        let now = DateTime::parse_from_rfc3339("2026-09-20T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snap = parse_usage_body(FIXTURE_API_USAGE_OK, "a", now).unwrap();
+        assert_eq!(snap.rolling.reset_in_sec, 0);
+        assert_eq!(snap.weekly.unwrap().reset_in_sec, 86_400);
+    }
+
+    #[test]
+    fn test_parse_usage_api_missing_usage_object() {
+        for body in [
+            "{}",
+            r#"{"data": 1}"#,
+            "[]",
+            "not json at all",
+            FIXTURE_API_USAGE_401,
+        ] {
+            let err = parse_usage_body(body, "a", fixed_now()).unwrap_err();
+            assert!(
+                matches!(err, AppError::Parse(ref m) if m == "Missing usage fields."),
+                "body {body:?} should be Missing usage fields., got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_usage_api_missing_window_or_bad_percent() {
+        let missing_weekly = r#"{"usage":{"rolling":{"percent":2,"resetsAt":"2026-09-19T18:00:33.055Z"},"monthly":{"percent":36,"resetsAt":"2026-10-06T17:26:30.055Z"}}}"#;
+        let err = parse_usage_body(missing_weekly, "a", fixed_now()).unwrap_err();
+        assert!(matches!(err, AppError::Parse(ref m) if m == "Missing usage fields."));
+
+        let bad_percent = r#"{"usage":{"rolling":{"percent":"high","resetsAt":"2026-09-19T18:00:33.055Z"},"weekly":{"percent":25,"resetsAt":"2026-09-21T00:00:00.055Z"},"monthly":{"percent":36,"resetsAt":"2026-10-06T17:26:30.055Z"}}}"#;
+        let err = parse_usage_body(bad_percent, "a", fixed_now()).unwrap_err();
+        assert!(matches!(err, AppError::Parse(ref m) if m == "Missing usage fields."));
+    }
+
+    #[test]
+    fn test_map_api_status_401_is_invalid_credentials() {
+        assert!(matches!(
+            map_api_status(401, FIXTURE_API_USAGE_401),
+            AppError::InvalidCredentials
+        ));
+    }
+
+    #[test]
+    fn test_map_api_status_403_is_not_subscribed() {
+        // Keyed off the status; the synthesized body must not matter
+        // (also: it has comment lines and is not valid JSON).
+        assert!(matches!(
+            map_api_status(403, FIXTURE_API_USAGE_403),
+            AppError::NotSubscribed
+        ));
+        assert!(matches!(map_api_status(403, ""), AppError::NotSubscribed));
+    }
+
+    #[test]
+    fn test_map_api_status_other_is_api_error_with_message() {
+        let err = map_api_status(500, FIXTURE_API_USAGE_401);
+        assert!(matches!(err, AppError::Api(ref m) if m == "HTTP 500: Unauthorized"));
+        let err = map_api_status(502, "<html>bad gateway</html>");
+        assert!(matches!(err, AppError::Api(ref m) if m == "HTTP 502"));
     }
 }

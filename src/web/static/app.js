@@ -8,6 +8,11 @@ let tickTimer = null;
 let intervalSecs = 60;
 let snapshot = null;
 const expandedCards = new Set();
+// Credential form state, keyed by account name. Survives re-renders so the
+// 10s status poll never eats a pasted key.
+const openCredCards = new Set();
+const credNotes = new Map(); // name -> { text, bad }
+const pendingCred = new Set();
 
 function hiddenMask(meters) {
   if (!meters || !meters.length) return [];
@@ -75,6 +80,124 @@ function remainingReset(baseSec, fetchedAt) {
   return Math.max(0, (Number(baseSec) || 0) - elapsed);
 }
 
+function isGoProvider(p) {
+  return p === "opencode_go" || p === "open_code_go";
+}
+
+function cssEscape(s) {
+  return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/"/g, '\\"');
+}
+
+function credRowHtml(a) {
+  const c = a.credential;
+  const kindTxt = !c ? "none" : c.kind === "api_key" ? "api key" : "cookie";
+  const maskTxt = c ? String(c.masked || "") : "no key or cookie stored";
+  const btn = isGoProvider(a.provider)
+    ? `<button type="button" class="cred-btn" data-cred-open="${escapeHtml(a.name)}">${c ? "update key" : "set key"}</button>`
+    : "";
+  return `<div class="cred-row">
+    <span class="cred-kind${c ? "" : " none"}">${kindTxt}</span>
+    <span class="cred-mask">${escapeHtml(maskTxt)}</span>
+    ${btn}
+  </div>`;
+}
+
+function credNoteHtml(a) {
+  const note = credNotes.get(a.name);
+  if (!note) return "";
+  return `<div class="note${note.bad ? " bad" : " dim"}">${escapeHtml(note.text)}</div>`;
+}
+
+function credFormHtml(a) {
+  const busy = pendingCred.has(a.name);
+  const dis = busy ? " disabled" : "";
+  return `<div class="cred-form" data-cred-name="${escapeHtml(a.name)}">
+    <div class="cred-input-row">
+      <input class="cred-input" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="paste opencode api key" aria-label="API key for ${escapeHtml(a.name)}" inputmode="text" enterkeyhint="done"${dis} />
+      <button type="button" class="cred-eye" aria-label="show key"${dis}>show</button>
+    </div>
+    <div class="cred-actions">
+      <button type="button" class="cred-save" data-cred-save="${escapeHtml(a.name)}"${dis}>${busy ? "checking…" : "save key"}</button>
+      <button type="button" class="cred-cancel" data-cred-cancel="${escapeHtml(a.name)}"${dis}>cancel</button>
+    </div>
+  </div>`;
+}
+
+function findCredForm(name) {
+  return cardsEl.querySelector(`.cred-form[data-cred-name="${cssEscape(name)}"]`);
+}
+
+// Preserve typed text / visibility / focus across innerHTML repaints.
+function captureCredForms() {
+  const state = {};
+  cardsEl.querySelectorAll(".cred-form[data-cred-name]").forEach((form) => {
+    const input = form.querySelector(".cred-input");
+    if (!input) return;
+    state[form.dataset.credName] = {
+      value: input.value,
+      shown: input.type === "text",
+      focus: document.activeElement === input,
+    };
+  });
+  return state;
+}
+
+function restoreCredForms(state) {
+  Object.entries(state).forEach(([name, s]) => {
+    const form = findCredForm(name);
+    if (!form) return;
+    const input = form.querySelector(".cred-input");
+    if (!input) return;
+    input.value = s.value;
+    input.type = s.shown ? "text" : "password";
+    const eye = form.querySelector(".cred-eye");
+    if (eye) eye.textContent = s.shown ? "hide" : "show";
+    if (s.focus) input.focus();
+  });
+}
+
+async function submitCred(name) {
+  if (!name || pendingCred.has(name)) return;
+  const form = findCredForm(name);
+  const input = form ? form.querySelector(".cred-input") : null;
+  if (!form || !input) return;
+  const value = (input.value || "").trim();
+  if (!value) {
+    credNotes.set(name, { text: "paste an api key first", bad: true });
+    paintCards();
+    return;
+  }
+  pendingCred.add(name);
+  credNotes.set(name, { text: "checking…", bad: false });
+  paintCards();
+  try {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(name)}/credential`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TokenBar": "1" },
+      body: JSON.stringify({ kind: "api_key", value }),
+    });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      /* non-JSON error body */
+    }
+    pendingCred.delete(name);
+    if (res.ok && data.ok) {
+      openCredCards.delete(name);
+      credNotes.set(name, { text: String(data.note || "saved"), bad: false });
+      await fetchStatus();
+    } else {
+      credNotes.set(name, { text: String(data.error || `HTTP ${res.status}`), bad: true });
+      paintCards();
+    }
+  } catch (e) {
+    pendingCred.delete(name);
+    credNotes.set(name, { text: (e && e.message) || "network error", bad: true });
+    paintCards();
+  }
+}
+
 function render(data, fetchedAt) {
   intervalSecs = data.refresh_interval_secs || 60;
   const refreshing = !!data.is_refreshing;
@@ -96,6 +219,7 @@ function render(data, fetchedAt) {
 function paintCards() {
   if (!snapshot) return;
   const { fetchedAt, accounts } = snapshot;
+  const savedForms = captureCredForms();
 
   cardsEl.innerHTML = accounts.map((a) => {
     const status = a.status || "error";
@@ -138,6 +262,10 @@ function paintCards() {
       body += `<div class="note">stale · ${escapeHtml(a.error)}</div>`;
     }
 
+    const credHtml = `${credRowHtml(a)}${credNoteHtml(a)}${
+      openCredCards.has(a.name) ? credFormHtml(a) : ""
+    }`;
+
     const cardCls = hasHidden && isExpanded ? "card expanded" : "card";
     return `<article class="${cardCls} ${escapeHtml(status)}">
       <div class="card-top">
@@ -151,11 +279,51 @@ function paintCards() {
         </div>
       </div>
       ${body}
+      ${credHtml}
     </article>`;
   }).join("");
+
+  restoreCredForms(savedForms);
 }
 
-cardsEl.addEventListener("click", (e) => {
+cardsEl.addEventListener("click", async (e) => {
+  const openBtn = e.target.closest("[data-cred-open]");
+  if (openBtn) {
+    const name = openBtn.dataset.credOpen;
+    openCredCards.add(name);
+    credNotes.delete(name);
+    paintCards();
+    const form = findCredForm(name);
+    if (form) {
+      const input = form.querySelector(".cred-input");
+      if (input) input.focus();
+    }
+    return;
+  }
+  const cancelBtn = e.target.closest("[data-cred-cancel]");
+  if (cancelBtn) {
+    const name = cancelBtn.dataset.credCancel;
+    openCredCards.delete(name);
+    credNotes.delete(name);
+    paintCards();
+    return;
+  }
+  const eyeBtn = e.target.closest(".cred-eye");
+  if (eyeBtn) {
+    const input = eyeBtn.closest(".cred-form")?.querySelector(".cred-input");
+    if (input) {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      eyeBtn.textContent = show ? "hide" : "show";
+      eyeBtn.setAttribute("aria-label", show ? "hide key" : "show key");
+    }
+    return;
+  }
+  const saveBtn = e.target.closest("[data-cred-save]");
+  if (saveBtn) {
+    submitCred(saveBtn.dataset.credSave);
+    return;
+  }
   const chevron = e.target.closest(".chevron-btn");
   if (!chevron) return;
   const key = chevron.dataset.key;
@@ -167,6 +335,15 @@ cardsEl.addEventListener("click", (e) => {
   } else {
     expandedCards.add(key);
   }
+});
+
+cardsEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const input = e.target.closest(".cred-input");
+  if (!input) return;
+  e.preventDefault();
+  const form = input.closest(".cred-form");
+  if (form) submitCred(form.dataset.credName);
 });
 
 function tickResets() {

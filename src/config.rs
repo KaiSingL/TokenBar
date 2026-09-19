@@ -53,7 +53,16 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<(), AppError> {
     }
     let contents = toml::to_string_pretty(config)
         .map_err(|e| AppError::Config(format!("Failed to serialize config: {e}")))?;
-    std::fs::write(path, contents)
+    // Atomic-ish: write a unique sibling temp file, then rename over the real
+    // path so a crash mid-write cannot truncate auth.toml.
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::Config(format!("Invalid config path: {}", path.display())))?;
+    let tmp = path.with_file_name(format!("{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, contents)
+        .map_err(|e| AppError::Config(format!("Failed to write config: {e}")))?;
+    std::fs::rename(&tmp, path)
         .map_err(|e| AppError::Config(format!("Failed to write config: {e}")))?;
     Ok(())
 }
@@ -74,9 +83,15 @@ pub fn ensure_account(path: &Path, name: &str, provider: ProviderKind) -> Result
     Ok(true)
 }
 
-/// Upsert a ZAI account with api_key into auth.toml.
+/// Upsert an account that authenticates with an api_key into auth.toml
+/// (provider-agnostic). Preserves every other account and field.
 /// Returns whether the account was newly created.
-pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool, AppError> {
+pub fn upsert_api_key_account(
+    path: &Path,
+    name: &str,
+    provider: ProviderKind,
+    api_key: &str,
+) -> Result<bool, AppError> {
     let mut config = load_config_or_default(path)?;
     let key = api_key.trim().to_string();
     if key.is_empty() {
@@ -84,7 +99,7 @@ pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool
     }
 
     if let Some(account) = config.accounts.iter_mut().find(|a| a.name == name) {
-        account.provider = ProviderKind::Zai;
+        account.provider = provider;
         account.api_key = Some(key);
         save_config(path, &config)?;
         return Ok(false);
@@ -92,11 +107,17 @@ pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool
 
     config.accounts.push(Account {
         name: name.to_string(),
-        provider: ProviderKind::Zai,
+        provider,
         api_key: Some(key),
     });
     save_config(path, &config)?;
     Ok(true)
+}
+
+/// Upsert a ZAI account with api_key into auth.toml.
+/// Returns whether the account was newly created.
+pub fn upsert_zai_account(path: &Path, name: &str, api_key: &str) -> Result<bool, AppError> {
+    upsert_api_key_account(path, name, ProviderKind::Zai, api_key)
 }
 
 #[cfg(test)]
@@ -205,6 +226,61 @@ mod tests {
         assert!(!upsert_zai_account(&path, "myzai", "new-key").unwrap());
         let cfg = load_config(&path).unwrap();
         assert_eq!(cfg.accounts[0].api_key.as_deref(), Some("new-key"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_api_key_account_preserves_other_accounts_and_fields() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let cfg = AppConfig {
+            refresh_interval_secs: 120,
+            accounts: vec![Account {
+                name: "cookie-go".into(),
+                provider: ProviderKind::OpenCodeGo,
+                api_key: None,
+            }],
+            ..AppConfig::default()
+        };
+        save_config(&path, &cfg).unwrap();
+
+        // Trims the key; creates a new account.
+        assert!(
+            upsert_api_key_account(&path, "go2", ProviderKind::OpenCodeGo, " sk-new ").unwrap()
+        );
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.refresh_interval_secs, 120);
+        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(loaded.accounts[0].name, "cookie-go");
+        assert!(loaded.accounts[0].api_key.is_none());
+        assert_eq!(loaded.accounts[1].name, "go2");
+        assert_eq!(loaded.accounts[1].provider, ProviderKind::OpenCodeGo);
+        assert_eq!(loaded.accounts[1].api_key.as_deref(), Some("sk-new"));
+
+        // Second upsert updates in place, no duplicates.
+        assert!(!upsert_api_key_account(&path, "go2", ProviderKind::OpenCodeGo, "sk-rot").unwrap());
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(loaded.accounts[1].api_key.as_deref(), Some("sk-rot"));
+
+        // No stray temp files left behind by the atomic write.
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_api_key_account_rejects_empty_key() {
+        let dir = temp_dir();
+        let path = dir.join("auth.toml");
+        let err = upsert_api_key_account(&path, "a", ProviderKind::Zai, "   ").unwrap_err();
+        assert!(err.to_string().contains("api_key must not be empty"));
+        assert!(!path.exists(), "rejected key must not create auth.toml");
         let _ = fs::remove_dir_all(&dir);
     }
 }

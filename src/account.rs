@@ -1,9 +1,110 @@
 use std::path::Path;
+use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::api::opencodego::{KeyCheck, OpenCodeGoProvider};
 use crate::error::AppError;
-use crate::model::{ProviderKind, SessionEntry};
+use crate::model::{ProviderKind, SessionEntry, UsageSnapshot};
+
+/// Timeout for the pre-store validation call (matches the default
+/// `request_timeout_secs`).
+const VALIDATE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Outcome of storing an API-key credential.
+#[derive(Debug)]
+pub enum CredentialOutcome {
+    /// 200 — key accepted by opencode.ai and stored; the windows it returned.
+    Stored { snapshot: UsageSnapshot },
+    /// 403 — key is valid but has no Go subscription; stored anyway.
+    /// Informational, not a failure.
+    StoredNotSubscribed,
+}
+
+/// Validate `api_key` against the live OpenCode Go usage API and persist it
+/// for `name` only when the key is usable:
+///
+/// - 200 → stored, subscribed (windows returned for display)
+/// - 403 → stored, but no Go subscription (reported plainly)
+/// - 401 → NOT stored, clear rejection
+/// - network error → NOT stored, `AppError::Network` propagated
+///
+/// The write is atomic-ish (temp file + rename via `save_config`) and
+/// preserves every other account and field in auth.toml.
+pub async fn set_api_key_credential(
+    data_dir: &Path,
+    config_path: &Path,
+    name: &str,
+    api_key: &str,
+) -> Result<CredentialOutcome, AppError> {
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return Err(AppError::Config("api_key must not be empty".into()));
+    }
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(AppError::Network)?;
+    let check = OpenCodeGoProvider::new(client, VALIDATE_TIMEOUT)
+        .check_api_key(&key)
+        .await?;
+
+    // `data_dir` is accepted for symmetry with the other credential entry
+    // points; an API key lives in auth.toml only, no session file is touched.
+    let _ = data_dir;
+
+    store_api_key_credential(config_path, name, &key, check)
+}
+
+/// Store-side of [`set_api_key_credential`]: no network I/O, so the
+/// write / no-write decision is unit-testable.
+fn store_api_key_credential(
+    config_path: &Path,
+    name: &str,
+    api_key: &str,
+    check: KeyCheck,
+) -> Result<CredentialOutcome, AppError> {
+    match check {
+        KeyCheck::Rejected => Err(AppError::Login(
+            "key rejected by opencode.ai (401) — not stored".into(),
+        )),
+        KeyCheck::NotSubscribed => {
+            crate::config::upsert_api_key_account(
+                config_path,
+                name,
+                ProviderKind::OpenCodeGo,
+                api_key,
+            )?;
+            Ok(CredentialOutcome::StoredNotSubscribed)
+        }
+        KeyCheck::Subscribed(snapshot) => {
+            crate::config::upsert_api_key_account(
+                config_path,
+                name,
+                ProviderKind::OpenCodeGo,
+                api_key,
+            )?;
+            Ok(CredentialOutcome::Stored { snapshot })
+        }
+    }
+}
+
+/// Mask a secret for display: at most first 7 chars + "…" + last 4.
+/// Never returns the input and never the middle of a long secret.
+pub fn mask_secret(value: &str) -> String {
+    let chars: Vec<char> = value.trim().chars().collect();
+    if chars.len() <= 11 {
+        // Too short to expose head+tail safely; show a stub instead.
+        if chars.is_empty() {
+            return "(none)".to_string();
+        }
+        let head: String = chars.iter().take(2).collect();
+        return format!("{head}…");
+    }
+    let first: String = chars.iter().take(7).collect();
+    let last: String = chars[chars.len() - 4..].iter().collect();
+    format!("{first}…{last}")
+}
 
 /// Remove one or more accounts from auth.toml and their sessions from
 /// sessions.json in one pass. Idempotent: names that don't exist are reported,
@@ -114,6 +215,7 @@ pub fn store_session_cookie(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::UsageWindow;
 
     fn temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -252,5 +354,112 @@ mod tests {
         let err = store_session_cookie(&dir, &cfg, "b", "   ".into()).unwrap_err();
         assert!(err.to_string().contains("--cookie must not be empty"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- API-key credential store path ----
+
+    fn sample_snapshot() -> UsageSnapshot {
+        UsageSnapshot {
+            account_name: "a".into(),
+            rolling: UsageWindow::with_label(2.0, 3633, "Rolling"),
+            weekly: Some(UsageWindow::with_label(25.0, 111_600, "Weekly")),
+            monthly: Some(UsageWindow::with_label(36.0, 1_470_390, "Monthly")),
+            updated_at: Utc::now(),
+            workspace_id: None,
+        }
+    }
+
+    #[test]
+    fn store_401_rejected_without_writing() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        write_config(&cfg, &["a", "b"]);
+        let before = std::fs::read(&cfg).unwrap();
+
+        let err =
+            store_api_key_credential(&cfg, "a", "sk-rejected", KeyCheck::Rejected).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("key rejected by opencode.ai (401)"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&cfg).unwrap(),
+            before,
+            "a rejected key must leave auth.toml byte-identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_200_writes_key_and_preserves_other_accounts() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        write_config(&cfg, &["a", "b"]);
+
+        let out = store_api_key_credential(
+            &cfg,
+            "a",
+            "sk-live",
+            KeyCheck::Subscribed(sample_snapshot()),
+        )
+        .unwrap();
+        match out {
+            CredentialOutcome::Stored { snapshot } => {
+                assert!((snapshot.rolling.usage_percent - 2.0).abs() < 0.001);
+            }
+            other => panic!("expected Stored, got {other:?}"),
+        }
+
+        let loaded = crate::config::load_config(&cfg).unwrap();
+        assert_eq!(loaded.accounts.len(), 2);
+        assert_eq!(loaded.accounts[0].name, "a");
+        assert_eq!(loaded.accounts[0].provider, ProviderKind::OpenCodeGo);
+        assert_eq!(loaded.accounts[0].api_key.as_deref(), Some("sk-live"));
+        assert_eq!(loaded.accounts[1].name, "b");
+        assert!(loaded.accounts[1].api_key.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_403_writes_key_but_reports_not_subscribed() {
+        let dir = temp_dir();
+        let cfg = dir.join("auth.toml");
+        write_config(&cfg, &["a"]);
+
+        let out =
+            store_api_key_credential(&cfg, "a", "sk-freeload", KeyCheck::NotSubscribed).unwrap();
+        assert!(matches!(out, CredentialOutcome::StoredNotSubscribed));
+
+        let loaded = crate::config::load_config(&cfg).unwrap();
+        assert_eq!(loaded.accounts[0].api_key.as_deref(), Some("sk-freeload"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mask_secret_never_reveals_middle_or_full() {
+        let key = "sk-3YLDrouterMIDDLEsunshine9XzQ";
+        let masked = mask_secret(key);
+        assert_ne!(masked, key, "mask must never equal the input");
+        assert!(
+            !masked.contains("routerMIDDLE"),
+            "mask must not contain the middle of a long key"
+        );
+        assert!(!masked.contains("sunshine"));
+        assert!(masked.starts_with("sk-3YLD"));
+        assert!(masked.ends_with("9XzQ"));
+    }
+
+    #[test]
+    fn mask_secret_short_and_edge_inputs() {
+        // Short inputs never round-trip the full value.
+        assert_ne!(mask_secret("short"), "short");
+        assert_ne!(mask_secret("sk-abc"), "sk-abc");
+        assert_eq!(mask_secret("  "), "(none)");
+        assert_eq!(mask_secret(""), "(none)");
+        // Just long enough (12 chars): first 7 + last 4 keeps one char hidden.
+        let masked = mask_secret("sk-abcde1234");
+        assert_eq!(masked, "sk-abcd…1234");
+        assert_ne!(masked, "sk-abcde1234");
     }
 }

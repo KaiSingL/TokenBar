@@ -3,22 +3,27 @@
 //! Binds loopback by default so Cloudflare Access + Tunnel can front it.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::info;
 
+use crate::account::{mask_secret, CredentialOutcome};
 use crate::app::{AppEvent, AppState};
-use crate::model::{Account, AccountStatus, UsageSnapshot, UsageWindow};
+use crate::error::AppError;
+use crate::model::{
+    Account, AccountStatus, ProviderKind, SessionEntry, UsageSnapshot, UsageWindow,
+};
 use crate::tui::widgets::format_reset;
 
 const INDEX_HTML: &str = include_str!("static/index.html");
@@ -30,7 +35,7 @@ const FAVICON_SVG: &[u8] = include_bytes!("static/favicon.svg");
 /// Bump when static assets change (sha256 prefix of
 /// icon.svg|favicon.png|favicon.svg|app.js).
 /// Injected as `?v=` so Cloudflare/mobile treat a deploy as a new cache key.
-const ASSET_V: &str = "171f47bf68";
+const ASSET_V: &str = "58f8c4c34e";
 
 fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
     (
@@ -66,6 +71,10 @@ fn index_html() -> String {
 struct WebState {
     app: Arc<RwLock<AppState>>,
     event_tx: mpsc::Sender<AppEvent>,
+    /// Data dir (for sessions.json) and auth.toml path, so the credential
+    /// endpoint can persist a new key.
+    data_dir: PathBuf,
+    config_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -86,6 +95,15 @@ struct AccountDto {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failed_at: Option<DateTime<Utc>>,
+    /// Non-secret credential descriptor; `masked` never holds the full value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential: Option<CredentialDto>,
+}
+
+#[derive(Serialize, Clone)]
+struct CredentialDto {
+    kind: &'static str,
+    masked: String,
 }
 
 #[derive(Serialize)]
@@ -100,14 +118,22 @@ struct MeterDto {
 pub async fn run_server(
     app: Arc<RwLock<AppState>>,
     event_tx: mpsc::Sender<AppEvent>,
+    data_dir: PathBuf,
+    config_path: PathBuf,
     bind: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = WebState { app, event_tx };
+    let state = WebState {
+        app,
+        event_tx,
+        data_dir,
+        config_path,
+    };
 
     let app_router = Router::new()
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/refresh", post(refresh_handler))
+        .route("/api/accounts/{name}/credential", post(credential_handler))
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route(
             "/icon.svg",
@@ -148,6 +174,7 @@ pub async fn run_server(
     eprintln!("  GET  /            mobile dashboard");
     eprintln!("  GET  /api/status  JSON snapshot");
     eprintln!("  POST /api/refresh force poll");
+    eprintln!("  POST /api/accounts/<name>/credential  store api key");
 
     axum::serve(listener, app_router)
         .with_graceful_shutdown(shutdown_signal())
@@ -188,11 +215,15 @@ async fn index_handler() -> Html<String> {
 
 async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
     let app = state.app.read().await;
+    let sessions =
+        crate::session::load_sessions(&crate::session::resolve_sessions_path(&state.data_dir))
+            .map(|s| s.sessions)
+            .unwrap_or_default();
     let accounts = app
         .accounts
         .iter()
         .zip(app.statuses.iter())
-        .map(|(account, status)| account_dto(account, status))
+        .map(|(account, status)| account_dto(account, status, sessions.get(&account.name)))
         .collect();
 
     Json(StatusResponse {
@@ -201,6 +232,110 @@ async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
         refresh_interval_secs: app.config.refresh_interval_secs,
         accounts,
     })
+}
+
+#[derive(Deserialize)]
+struct CredentialRequest {
+    kind: String,
+    value: String,
+}
+
+/// POST /api/accounts/{name}/credential — validate an API key against the
+/// live opencode.ai usage API and store it when accepted.
+///
+/// Requires the `X-TokenBar: 1` custom header so a cross-site form cannot
+/// rewrite credentials (custom headers are not submittable cross-site). The
+/// key is never logged and never returned in full.
+async fn credential_handler(
+    State(state): State<WebState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<CredentialRequest>,
+) -> Response {
+    // CSRF guard.
+    if headers.get("x-tokenbar").and_then(|v| v.to_str().ok()) != Some("1") {
+        return cred_err(StatusCode::FORBIDDEN, "missing X-TokenBar: 1 header");
+    }
+    if req.kind != "api_key" {
+        return cred_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported credential kind (expected api_key)",
+        );
+    }
+    let value = req.value.trim().to_string();
+    if value.is_empty() {
+        return cred_err(StatusCode::BAD_REQUEST, "value must not be empty");
+    }
+
+    // Unknown account → 404; non-opencode_go accounts don't use this path.
+    let provider = {
+        let app = state.app.read().await;
+        match app.accounts.iter().find(|a| a.name == name) {
+            None => return cred_err(StatusCode::NOT_FOUND, &format!("unknown account '{name}'")),
+            Some(account) => account.provider,
+        }
+    };
+    if provider != ProviderKind::OpenCodeGo {
+        return cred_err(
+            StatusCode::BAD_REQUEST,
+            "web credential entry is only supported for opencode_go accounts",
+        );
+    }
+
+    match crate::account::set_api_key_credential(&state.data_dir, &state.config_path, &name, &value)
+        .await
+    {
+        Ok(outcome) => {
+            // Surface the new credential to the poller (it re-reads
+            // state.accounts on every refresh) and kick a refresh now,
+            // through the same event queue /api/refresh uses.
+            {
+                let mut app = state.app.write().await;
+                for account in app.accounts.iter_mut() {
+                    if account.name == name {
+                        account.api_key = Some(value.clone());
+                    }
+                }
+                for account in app.config.accounts.iter_mut() {
+                    if account.name == name {
+                        account.api_key = Some(value.clone());
+                    }
+                }
+            }
+            let _ = state.event_tx.try_send(AppEvent::Refresh);
+
+            let (subscribed, note) = match outcome {
+                CredentialOutcome::Stored { .. } => {
+                    (true, "api key stored — refreshing usage".to_string())
+                }
+                CredentialOutcome::StoredNotSubscribed => (
+                    false,
+                    "key stored, but it has no OpenCode Go subscription".to_string(),
+                ),
+            };
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "masked": mask_secret(&value),
+                    "subscribed": subscribed,
+                    "note": note,
+                })),
+            )
+                .into_response()
+        }
+        Err(AppError::Login(reason)) => cred_err(StatusCode::BAD_REQUEST, &reason),
+        Err(AppError::Config(reason)) => cred_err(StatusCode::INTERNAL_SERVER_ERROR, &reason),
+        Err(e) => cred_err(StatusCode::BAD_GATEWAY, &e.to_string()),
+    }
+}
+
+fn cred_err(status: StatusCode, reason: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "ok": false, "error": reason })),
+    )
+        .into_response()
 }
 
 async fn refresh_handler(State(state): State<WebState>) -> Response {
@@ -218,7 +353,12 @@ async fn refresh_handler(State(state): State<WebState>) -> Response {
     }
 }
 
-fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
+fn account_dto(
+    account: &Account,
+    status: &AccountStatus,
+    session: Option<&SessionEntry>,
+) -> AccountDto {
+    let credential = credential_dto(account, session);
     match status {
         AccountStatus::NoSession => AccountDto {
             name: account.name.clone(),
@@ -227,6 +367,7 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: Vec::new(),
             error: Some(no_session_hint(account)),
             failed_at: None,
+            credential,
         },
         AccountStatus::NotSubscribed { workspace_id } => AccountDto {
             name: account.name.clone(),
@@ -235,6 +376,7 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: Vec::new(),
             error: Some(not_subscribed_hint(workspace_id.as_deref())),
             failed_at: None,
+            credential,
         },
         AccountStatus::Loading => AccountDto {
             name: account.name.clone(),
@@ -243,6 +385,7 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: Vec::new(),
             error: None,
             failed_at: None,
+            credential,
         },
         AccountStatus::Ready(snapshot) => AccountDto {
             name: account.name.clone(),
@@ -251,6 +394,7 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: meters_from_snapshot(snapshot),
             error: None,
             failed_at: None,
+            credential,
         },
         AccountStatus::Stale {
             last,
@@ -263,6 +407,7 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: meters_from_snapshot(last),
             error: Some(error.clone()),
             failed_at: Some(*failed_at),
+            credential,
         },
         AccountStatus::Error { message, failed_at } => AccountDto {
             name: account.name.clone(),
@@ -271,8 +416,36 @@ fn account_dto(account: &Account, status: &AccountStatus) -> AccountDto {
             meters: Vec::new(),
             error: Some(message.clone()),
             failed_at: Some(*failed_at),
+            credential,
         },
     }
+}
+
+/// Non-secret credential descriptor for the dashboard: which kind is stored
+/// and a masked hint. `masked` never contains the full value.
+fn credential_dto(account: &Account, session: Option<&SessionEntry>) -> Option<CredentialDto> {
+    if let Some(key) = account
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    {
+        return Some(CredentialDto {
+            kind: "api_key",
+            masked: mask_secret(key),
+        });
+    }
+    if account.provider == ProviderKind::OpenCodeGo
+        && session
+            .map(|s| !s.cookie.trim().is_empty())
+            .unwrap_or(false)
+    {
+        return Some(CredentialDto {
+            kind: "cookie",
+            masked: "cookie (browser session)".into(),
+        });
+    }
+    None
 }
 
 fn no_session_hint(account: &Account) -> String {
@@ -335,5 +508,68 @@ fn meter_dto(label: String, window: &UsageWindow) -> MeterDto {
         usage_percent: window.usage_percent.clamp(0.0, 100.0),
         reset_in_sec: window.reset_in_sec,
         reset_label: format_reset(window.reset_in_sec),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Account;
+
+    fn go_account(api_key: Option<&str>) -> Account {
+        Account {
+            name: "go".into(),
+            provider: ProviderKind::OpenCodeGo,
+            api_key: api_key.map(str::to_string),
+        }
+    }
+
+    fn cookie_session(cookie: &str) -> SessionEntry {
+        SessionEntry {
+            cookie: cookie.into(),
+            workspace_id: None,
+            access_token: None,
+            refresh_token: None,
+            expires_at: None,
+            email: None,
+            user_id: None,
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn credential_dto_masks_api_key() {
+        let key = "sk-3YLDrouterMIDDLEsunshine9XzQ";
+        let dto = credential_dto(&go_account(Some(key)), None).expect("credential");
+        assert_eq!(dto.kind, "api_key");
+        assert_ne!(dto.masked, key, "masked must never equal the key");
+        assert!(!dto.masked.contains("routerMIDDLE"));
+        assert!(!dto.masked.contains("sunshine"));
+    }
+
+    #[test]
+    fn credential_dto_cookie_session_has_no_secret() {
+        let dto = credential_dto(
+            &go_account(None),
+            Some(&cookie_session("auth=Fe26.2**secret")),
+        )
+        .expect("credential");
+        assert_eq!(dto.kind, "cookie");
+        assert_eq!(dto.masked, "cookie (browser session)");
+        assert!(!dto.masked.contains("secret"));
+    }
+
+    #[test]
+    fn credential_dto_blank_key_falls_back_to_cookie() {
+        let dto = credential_dto(&go_account(Some("   ")), Some(&cookie_session("auth=x")))
+            .expect("credential");
+        assert_eq!(dto.kind, "cookie");
+    }
+
+    #[test]
+    fn credential_dto_none_when_nothing_stored() {
+        assert!(credential_dto(&go_account(None), None).is_none());
+        assert!(credential_dto(&go_account(None), Some(&cookie_session(""))).is_none());
+        assert!(credential_dto(&go_account(None), Some(&cookie_session("  "))).is_none());
     }
 }

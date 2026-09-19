@@ -1,0 +1,9 @@
+// SYNTHESIZED from documented behavior (openusage docs: 403 EntitlementError = key valid,
+// no Go subscription) — NOT a captured response. Tests must key off HTTP 403, not this body.
+{
+  "type": "error",
+  "error": {
+    "type": "EntitlementError",
+    "message": "This API key does not have an OpenCode Go subscription"
+  }
+}
