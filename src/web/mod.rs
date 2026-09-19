@@ -82,6 +82,9 @@ struct StatusResponse {
     last_refresh: Option<DateTime<Utc>>,
     is_refreshing: bool,
     refresh_interval_secs: u64,
+    /// Mirrors `AppConfig::show_credentials` so the dashboard knows whether to
+    /// render the credential row / form / source picker at all.
+    show_credentials: bool,
     accounts: Vec<AccountDto>,
 }
 
@@ -241,6 +244,7 @@ async fn index_handler() -> Html<String> {
 
 async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
     let app = state.app.read().await;
+    let show_credentials = app.config.show_credentials;
     let sessions =
         crate::session::load_sessions(&crate::session::resolve_sessions_path(&state.data_dir))
             .map(|s| s.sessions)
@@ -255,7 +259,7 @@ async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
             // credential card can show where it comes from. The value itself
             // never leaves credential_dto masked.
             let key = crate::api::resolve_opencode_api_key(account);
-            account_dto(account, status, session, key.as_ref())
+            account_dto(account, status, session, key.as_ref(), show_credentials)
         })
         .collect();
 
@@ -263,6 +267,7 @@ async fn status_handler(State(state): State<WebState>) -> Json<StatusResponse> {
         last_refresh: app.last_refresh,
         is_refreshing: app.is_refreshing,
         refresh_interval_secs: app.config.refresh_interval_secs,
+        show_credentials: app.config.show_credentials,
         accounts,
     })
 }
@@ -490,8 +495,15 @@ fn account_dto(
     status: &AccountStatus,
     session: Option<&SessionEntry>,
     key: Option<&crate::keysource::ResolvedKey>,
+    show_credentials: bool,
 ) -> AccountDto {
-    let credential = credential_dto(account, session, key);
+    // With the credential UI hidden the descriptor is omitted entirely, so the
+    // card renders exactly as it did before credential entry existed.
+    let credential = if show_credentials {
+        credential_dto(account, session, key)
+    } else {
+        None
+    };
     let action_url = action_url_for(account, status);
     match status {
         AccountStatus::NoSession => AccountDto {
@@ -842,6 +854,7 @@ mod tests {
             }),
             Some(&cookie_session("auth=Fe26.2**cookiesecret")),
             Some(&resolved),
+            true,
         );
         let json = serde_json::to_string(&dto).unwrap();
         assert!(!json.contains("SECRET"), "leaked the key: {json}");
@@ -849,5 +862,39 @@ mod tests {
         assert!(json.contains("hermes:lks00"), "missing provenance: {json}");
         // Status metadata stays display-only: it appears nowhere as a meter.
         assert!(!json.contains("\"meters\":[{\"label\":\"429"), "{json}");
+    }
+
+    #[test]
+    fn credential_ui_flag_hides_and_restores_the_descriptor() {
+        let account = source_account(Some("hermes:lks00"));
+        let status = AccountStatus::Ready(UsageSnapshot {
+            account_name: "go".into(),
+            rolling: crate::model::UsageWindow::with_label(2.0, 3600, "Rolling"),
+            weekly: None,
+            monthly: None,
+            updated_at: Utc::now(),
+            workspace_id: None,
+        });
+        let resolved = ResolvedKey {
+            key: "sk-tes...CRET".into(),
+            source: Some("hermes:lks00".into()),
+            store: "hermes",
+            label: Some("lks00".into()),
+            status: None,
+        };
+        let session = cookie_session("auth=Fe26.2**cookiesecret");
+
+        // Hidden (the default): no credential descriptor at all, so the card is
+        // byte-for-byte the pre-credential-feature shape.
+        let hidden = account_dto(&account, &status, Some(&session), Some(&resolved), false);
+        let json = serde_json::to_string(&hidden).unwrap();
+        assert!(!json.contains("credential"), "credential leaked: {json}");
+        assert!(!json.contains("SECRET"), "key leaked: {json}");
+
+        // Enabled: the same account exposes provenance, still without the key.
+        let shown = account_dto(&account, &status, Some(&session), Some(&resolved), true);
+        let json = serde_json::to_string(&shown).unwrap();
+        assert!(json.contains("hermes:lks00"), "{json}");
+        assert!(!json.contains("SECRET"), "key leaked: {json}");
     }
 }

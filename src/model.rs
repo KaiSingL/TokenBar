@@ -65,6 +65,13 @@ pub struct AppConfig {
     pub request_timeout_secs: u64,
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_fetches: usize,
+    /// Show the credential-entry UI (paste a key / adopt one from a local store)
+    /// in the web dashboard. Off by default so the dashboard keeps the plain
+    /// usage layout; set `show_credentials = true` in auth.toml to bring the
+    /// credential row, form and source picker back. The endpoints stay live
+    /// either way.
+    #[serde(default)]
+    pub show_credentials: bool,
     #[serde(default)]
     pub accounts: Vec<Account>,
 }
@@ -85,6 +92,7 @@ impl Default for AppConfig {
             refresh_interval_secs: 60,
             request_timeout_secs: 15,
             max_concurrent_fetches: 4,
+            show_credentials: false,
             accounts: Vec::new(),
         }
     }

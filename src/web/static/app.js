@@ -18,6 +18,9 @@ const pendingCred = new Set();
 let keySourcesCache = null;
 let keySourcesFetchedAt = 0;
 const KEY_SOURCES_TTL_MS = 60_000;
+// Mirrors AppConfig::show_credentials: when false the dashboard renders the
+// plain usage cards only, exactly as it did before credential entry existed.
+let showCredentials = false;
 
 function hiddenMask(meters) {
   if (!meters || !meters.length) return [];
@@ -284,6 +287,7 @@ function submitKeySource(name, ref) {
 
 function render(data, fetchedAt) {
   intervalSecs = data.refresh_interval_secs || 60;
+  showCredentials = !!data.show_credentials;
   const refreshing = !!data.is_refreshing;
   liveEl.className = "live " + (refreshing ? "sync" : data.last_refresh ? "" : "idle");
   liveEl.textContent = refreshing ? "sync" : data.last_refresh ? "live" : "idle";
@@ -352,9 +356,9 @@ function paintCards() {
       body += `<div class="note">stale · ${escapeHtml(a.error)}</div>`;
     }
 
-    const credHtml = `${credRowHtml(a)}${credNoteHtml(a)}${
-      openCredCards.has(a.name) ? credFormHtml(a) : ""
-    }`;
+    const credHtml = showCredentials
+      ? `${credRowHtml(a)}${credNoteHtml(a)}${openCredCards.has(a.name) ? credFormHtml(a) : ""}`
+      : "";
 
     const cardCls = hasHidden && isExpanded ? "card expanded" : "card";
     return `<article class="${cardCls} ${escapeHtml(status)}">

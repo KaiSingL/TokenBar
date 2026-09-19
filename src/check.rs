@@ -243,6 +243,7 @@ mod tests {
             refresh_interval_secs: 60,
             request_timeout_secs: 15,
             max_concurrent_fetches: 4,
+            show_credentials: false,
             accounts,
         }
     }
