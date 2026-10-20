@@ -3068,6 +3068,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures-util",
+ "libc",
  "ratatui",
  "regex",
  "reqwest",

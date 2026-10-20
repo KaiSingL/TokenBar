@@ -56,6 +56,8 @@ enum Commands {
     },
     /// Validate auth.toml (and sessions.json) without starting the server
     Check,
+    /// Restart a running `serve` daemon (SIGHUP; launchd KeepAlive respawns it)
+    Restart,
     /// Manage accounts: list, login, logout, or remove
     Account {
         #[command(subcommand)]
@@ -139,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(_) => std::process::exit(1),
             }
         }
+        Some(Commands::Restart) => run_restart(&data_dir).await,
         Some(Commands::Serve { bind, port }) => {
             init_file_tracing(&data_dir, env_filter)?;
             run_serve(&config_path, &data_dir, &bind, port).await
@@ -488,6 +491,71 @@ async fn run_account_command(
         }
     }
     Ok(())
+}
+
+/// CLI path for `tokenbar restart`: find the running `serve` daemon via the
+/// pidfile, SIGHUP it, and confirm the restart by waiting for the pidfile to
+/// be rewritten with a NEW pid (launchd KeepAlive respawns the daemon).
+async fn run_restart(data_dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(unix))]
+    {
+        Err("`tokenbar restart` is Unix-only (it restarts via SIGHUP)".into())
+    }
+    #[cfg(unix)]
+    {
+        let Some(info) = pidfile::read(data_dir).await? else {
+            return Err(format!(
+                "no running server found (missing {}); start one with `tokenbar serve`",
+                pidfile::path(data_dir).display()
+            )
+            .into());
+        };
+
+        let old = info.pid;
+        if !process_alive(old) {
+            // launchctl kickstart -k kills with SIGKILL, so the daemon cannot
+            // clean its pidfile up; a stale entry means nothing to signal.
+            return Err(format!(
+                "stale pidfile: pid {old} is not running; no live daemon to restart (start one with `tokenbar serve`)"
+            )
+            .into());
+        }
+
+        if unsafe { libc::kill(old, libc::SIGHUP) } != 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(format!("failed to signal pid {old}: {err}").into());
+        }
+
+        let old_addr = info.addr.clone();
+        eprintln!("signalled pid {old} ({old_addr}), waiting for restart...");
+
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Some(new) = pidfile::read(data_dir).await? {
+                if new.pid != old {
+                    println!(
+                        "restarted: old pid {old} -> new pid {} ({})",
+                        new.pid, new.addr
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(format!(
+            "sent SIGHUP to pid {old}, but no new pidfile appeared within 10s. If the server was NOT started under launchd, nothing respawns it (a foreground `tokenbar serve` simply exits). Under launchd check: launchctl print gui/$(id -u)/com.kaising.tokenbar"
+        )
+        .into())
+    }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // kill(pid, 0) errors: ESRCH = gone, EPERM = alive but owned by someone else.
+    unsafe {
+        libc::kill(pid, 0) == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
 }
 
 /// CLI path for `account login <name> --provider opencode_go --api-key …`:
