@@ -15,6 +15,7 @@ mod error;
 mod keysource;
 mod login;
 mod model;
+mod pidfile;
 mod session;
 mod tui;
 mod web;
