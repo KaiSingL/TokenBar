@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod account;
@@ -632,17 +632,71 @@ async fn run_serve(
         .parse()
         .map_err(|e| format!("Invalid bind address {bind_host}:{port}: {e}"))?;
 
-    let serve_result = web::run_server(
-        state,
-        event_tx.clone(),
-        data_dir.to_path_buf(),
-        config_path.to_path_buf(),
-        bind,
-    )
-    .await;
+    let addr_label = format!("{bind_host}:{port}");
+    match pidfile::write(data_dir, std::process::id() as i32, &addr_label).await {
+        Ok(()) => info!("Pidfile written at {}", pidfile::path(data_dir).display()),
+        Err(e) => warn!("Could not write serve pidfile: {e}"),
+    }
+
+    let serve_result =
+        run_server_until_signal(state, event_tx.clone(), data_dir, config_path, bind).await;
 
     let _ = event_tx.send(app::AppEvent::Quit).await;
     let _ = poller_handle.await;
 
+    let _ = pidfile::remove(data_dir).await;
+
     serve_result
+}
+
+/// Run the web server until completion OR SIGHUP. On SIGHUP (a restart
+/// request, e.g. `tokenbar restart`) the future returns Ok(()) so `run_serve`
+/// runs its normal clean-shutdown path; under launchd KeepAlive the agent
+/// immediately respawns the daemon, which is the actual restart. Without
+/// launchd (foreground run) SIGHUP just stops the process; `tokenbar restart`
+/// reports that.
+#[cfg(unix)]
+async fn run_server_until_signal(
+    state: Arc<RwLock<app::AppState>>,
+    event_tx: mpsc::Sender<app::AppEvent>,
+    data_dir: &std::path::Path,
+    config_path: &std::path::Path,
+    bind: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut hangup = signal(SignalKind::hangup())
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("install SIGHUP handler: {e}").into() })?;
+
+    tokio::select! {
+        res = web::run_server(
+            state,
+            event_tx,
+            data_dir.to_path_buf(),
+            config_path.to_path_buf(),
+            bind,
+        ) => res,
+        _ = hangup.recv() => {
+            info!("SIGHUP received, exiting cleanly for restart");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn run_server_until_signal(
+    state: Arc<RwLock<app::AppState>>,
+    event_tx: mpsc::Sender<app::AppEvent>,
+    data_dir: &std::path::Path,
+    config_path: &std::path::Path,
+    bind: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    web::run_server(
+        state,
+        event_tx,
+        data_dir.to_path_buf(),
+        config_path.to_path_buf(),
+        bind,
+    )
+    .await
 }
