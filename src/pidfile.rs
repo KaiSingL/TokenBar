@@ -100,7 +100,9 @@ mod tests {
     #[tokio::test]
     async fn read_malformed_is_none() {
         let dir = temp_dir();
-        tokio::fs::write(path(&dir), "not-a-pidfile\n").await.unwrap();
+        tokio::fs::write(path(&dir), "not-a-pidfile\n")
+            .await
+            .unwrap();
         assert!(read(&dir).await.expect("read malformed pidfile").is_none());
     }
 

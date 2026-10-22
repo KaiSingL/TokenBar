@@ -733,8 +733,9 @@ async fn run_server_until_signal(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::signal::unix::{signal, SignalKind};
 
-    let mut hangup = signal(SignalKind::hangup())
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("install SIGHUP handler: {e}").into() })?;
+    let mut hangup = signal(SignalKind::hangup()).map_err(|e| -> Box<dyn std::error::Error> {
+        format!("install SIGHUP handler: {e}").into()
+    })?;
 
     tokio::select! {
         res = web::run_server(
