@@ -49,7 +49,7 @@ pub fn card_height(status: &AccountStatus, expanded: bool) -> u16 {
         AccountStatus::Ready(s) => visible_meter_count(s, expanded),
         AccountStatus::Stale { last: s, .. } => visible_meter_count(s, expanded) + 1,
         AccountStatus::NoSession => 2,
-        AccountStatus::NotSubscribed { .. } => 2,
+        AccountStatus::NotSubscribed { .. } => 1,
         AccountStatus::Loading => 1,
         AccountStatus::Error { .. } => 2,
     };
@@ -220,24 +220,12 @@ pub fn render_account_card(
                 inner,
             );
         }
-        AccountStatus::NotSubscribed { workspace_id } => {
-            let hint = match workspace_id {
-                Some(wid) => format!("https://opencode.ai/workspace/{wid}/go"),
-                None => "https://opencode.ai/console".to_string(),
-            };
+        AccountStatus::NotSubscribed { .. } => {
             f.render_widget(
-                Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        "Not subscribed to OpenCode Go",
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                    Line::from(Span::styled(
-                        hint,
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::DIM),
-                    )),
-                ]),
+                Paragraph::new(Line::from(Span::styled(
+                    "Not subscribed to OpenCode Go",
+                    Style::default().fg(Color::DarkGray),
+                ))),
                 inner,
             );
         }

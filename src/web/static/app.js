@@ -174,12 +174,6 @@ function credFormHtml(a) {
   </div>`;
 }
 
-function actionLabel(status) {
-  if (status === "not_subscribed") return "open this workspace in opencode.ai";
-  if (status === "no_session") return "sign in at opencode.ai";
-  return "open in opencode.ai";
-}
-
 function findCredForm(name) {
   return cardsEl.querySelector(`.cred-form[data-cred-name="${cssEscape(name)}"]`);
 }
@@ -344,12 +338,6 @@ function paintCards() {
       body = `<div class="note dim">${escapeHtml(a.error || "No OpenCode Go subscription")}</div>`;
     } else if (status === "error") {
       body = `<div class="note bad">${escapeHtml(a.error || "Error")}</div>`;
-    }
-
-    // Tappable destination for the states that have one. Only server-supplied
-    // http(s) URLs are rendered, and only as a link.
-    if (a.action_url && /^https?:\/\//.test(a.action_url)) {
-      body += `<div><a class="note-link" href="${escapeHtml(a.action_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(actionLabel(status))}</a></div>`;
     }
 
     if (status === "stale" && a.error) {
